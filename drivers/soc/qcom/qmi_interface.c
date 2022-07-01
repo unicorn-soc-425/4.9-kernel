@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -58,7 +58,7 @@ static LIST_HEAD(svc_event_nb_list);
 static DEFINE_MUTEX(svc_event_nb_list_lock);
 
 struct qmi_notify_event_work {
-	unsigned int event;
+	unsigned event;
 	void *oob_data;
 	size_t oob_data_len;
 	void *priv;
@@ -101,7 +101,6 @@ struct elem_info qmi_response_type_v01_ei[] = {
 		.ei_array	= NULL,
 	},
 };
-EXPORT_SYMBOL(qmi_response_type_v01_ei);
 
 struct elem_info qmi_error_resp_type_v01_ei[] = {
 	{
@@ -222,8 +221,10 @@ static struct req_handle *add_req_handle(struct qmi_svc_clnt_conn *conn_h,
 	struct req_handle *req_h;
 
 	req_h = kmalloc(sizeof(struct req_handle), GFP_KERNEL);
-	if (!req_h)
+	if (!req_h) {
+		pr_err("%s: Error allocating req_h\n", __func__);
 		return NULL;
+	}
 
 	req_h->conn_h = conn_h;
 	req_h->msg_id = msg_id;
@@ -287,12 +288,14 @@ static struct qmi_svc_clnt_conn *add_svc_clnt_conn(
 	struct qmi_svc_clnt_conn *conn_h;
 
 	conn_h = kmalloc(sizeof(struct qmi_svc_clnt_conn), GFP_KERNEL);
-	if (!conn_h)
+	if (!conn_h) {
+		pr_err("%s: Error allocating conn_h\n", __func__);
 		return NULL;
+	}
 
 	conn_h->clnt_addr = kmalloc(clnt_addr_len, GFP_KERNEL);
 	if (!conn_h->clnt_addr) {
-		kfree(conn_h);
+		pr_err("%s: Error allocating clnt_addr\n", __func__);
 		return NULL;
 	}
 
@@ -401,7 +404,7 @@ static void rmv_svc_clnt_conn(struct qmi_svc_clnt_conn *conn_h)
  * interface regarding any incoming event. This function is registered by
  * QMI interface when it opens a port/handle with the underlying transport.
  */
-static void qmi_event_notify(unsigned int event, void *oob_data,
+static void qmi_event_notify(unsigned event, void *oob_data,
 			     size_t oob_data_len, void *priv)
 {
 	struct qmi_notify_event_work *notify_work;
@@ -410,9 +413,11 @@ static void qmi_event_notify(unsigned int event, void *oob_data,
 
 	notify_work = kmalloc(sizeof(struct qmi_notify_event_work),
 			      GFP_KERNEL);
-	if (!notify_work)
+	if (!notify_work) {
+		pr_err("%s: Couldn't notify %d event to %p\n",
+			__func__, event, priv);
 		return;
-
+	}
 	notify_work->event = event;
 	if (oob_data) {
 		notify_work->oob_data = kmalloc(oob_data_len, GFP_KERNEL);
@@ -711,6 +716,7 @@ static void handle_ctl_msg(struct work_struct *work)
 		kfree(ctl_msg);
 	}
 	mutex_unlock(&handle->handle_lock);
+	return;
 }
 
 struct qmi_handle *qmi_handle_create(
@@ -724,8 +730,10 @@ struct qmi_handle *qmi_handle_create(
 	char wq_name[MAX_WQ_NAME_LEN];
 
 	temp_handle = kzalloc(sizeof(struct qmi_handle), GFP_KERNEL);
-	if (!temp_handle)
+	if (!temp_handle) {
+		pr_err("%s: Failure allocating client handle\n", __func__);
 		return NULL;
+	}
 	mutex_lock(&handle_hash_tbl_lock);
 	handle_count++;
 	scnprintf(wq_name, MAX_WQ_NAME_LEN, "qmi_hndl%08x", handle_count);
@@ -906,6 +914,7 @@ static int qmi_encode_and_send_req(struct qmi_txn **ret_txn_handle,
 	/* Allocate Transaction Info */
 	txn_handle = kzalloc(sizeof(struct qmi_txn), GFP_KERNEL);
 	if (!txn_handle) {
+		pr_err("%s: Failed to allocate txn handle\n", __func__);
 		mutex_unlock(&handle->handle_lock);
 		return -ENOMEM;
 	}
@@ -928,6 +937,7 @@ static int qmi_encode_and_send_req(struct qmi_txn **ret_txn_handle,
 	encoded_req_len = req_desc->max_msg_len + QMI_HEADER_SIZE;
 	encoded_req = kmalloc(encoded_req_len, GFP_KERNEL);
 	if (!encoded_req) {
+		pr_err("%s: Failed to allocate req_msg_buf\n", __func__);
 		rc = -ENOMEM;
 		goto encode_and_send_req_err1;
 	}
@@ -1117,6 +1127,7 @@ static int qmi_encode_and_send_resp(struct qmi_handle *handle,
 	/* Allocate Transaction Info */
 	txn_handle = kzalloc(sizeof(struct qmi_txn), GFP_KERNEL);
 	if (!txn_handle) {
+		pr_err("%s: Failed to allocate txn handle\n", __func__);
 		rc = -ENOMEM;
 		goto encode_and_send_resp_err0;
 	}
@@ -1130,6 +1141,7 @@ static int qmi_encode_and_send_resp(struct qmi_handle *handle,
 	encoded_resp_len = resp_desc->max_msg_len + QMI_HEADER_SIZE;
 	encoded_resp = kmalloc(encoded_resp_len, GFP_KERNEL);
 	if (!encoded_resp) {
+		pr_err("%s: Failed to allocate resp_msg_buf\n", __func__);
 		rc = -ENOMEM;
 		goto encode_and_send_resp_err1;
 	}
@@ -1393,8 +1405,10 @@ static int send_err_resp(struct qmi_handle *handle,
 
 	/* Allocate Transaction Info */
 	txn_handle = kzalloc(sizeof(struct qmi_txn), GFP_KERNEL);
-	if (!txn_handle)
+	if (!txn_handle) {
+		pr_err("%s: Failed to allocate txn handle\n", __func__);
 		return -ENOMEM;
+	}
 	INIT_LIST_HEAD(&txn_handle->list);
 	init_waitqueue_head(&txn_handle->wait_q);
 	txn_handle->handle = handle;
@@ -1405,6 +1419,7 @@ static int send_err_resp(struct qmi_handle *handle,
 	encoded_resp_len = err_resp_desc.max_msg_len + QMI_HEADER_SIZE;
 	encoded_resp = kmalloc(encoded_resp_len, GFP_KERNEL);
 	if (!encoded_resp) {
+		pr_err("%s: Failed to allocate resp_msg_buf\n", __func__);
 		rc = -ENOMEM;
 		goto encode_and_send_err_resp_err0;
 	}
@@ -1527,6 +1542,7 @@ decode_req:
 
 	req_struct = kzalloc(req_struct_len, GFP_KERNEL);
 	if (!req_struct) {
+		pr_err("%s: Error allocating request struct\n", __func__);
 		rc = -ENOMEM;
 		goto out_handle_req;
 	}
@@ -1718,8 +1734,10 @@ int qmi_connect_to_service(struct qmi_handle *handle,
 
 	svc_dest_addr = kzalloc(sizeof(struct msm_ipc_addr),
 				GFP_KERNEL);
-	if (!svc_dest_addr)
+	if (!svc_dest_addr) {
+		pr_err("%s: Failure allocating memory\n", __func__);
 		return -ENOMEM;
+	}
 
 	instance_id = BUILD_INSTANCE_ID(service_vers, service_ins);
 	svc_name.service = service_id;
@@ -1808,8 +1826,8 @@ static int qmi_notify_svc_event_arrive(uint32_t service,
 	mutex_lock(&temp->svc_addr_list_lock);
 	list_for_each_entry(addr, &temp->svc_addr_list, list_node)
 		if (addr->port_addr.node_id == node_id &&
-		    addr->port_addr.port_id == port_id)
-			already_notified = true;
+			addr->port_addr.port_id == port_id)
+				already_notified = true;
 	if (!already_notified) {
 		/*
 		 * Notify only if the clients are not notified about the
@@ -1908,8 +1926,10 @@ static struct svc_event_nb *find_and_add_svc_event_nb(uint32_t service_id,
 		return temp;
 
 	temp = kzalloc(sizeof(struct svc_event_nb), GFP_KERNEL);
-	if (!temp)
+	if (!temp) {
+		pr_err("%s: Failed to alloc notifier block\n", __func__);
 		return temp;
+	}
 
 	spin_lock_init(&temp->nb_lock);
 	temp->service_id = service_id;
@@ -2063,8 +2083,7 @@ static void qmi_svc_event_worker(struct work_struct *work)
 }
 
 /**
- * qmi_svc_event_notify() - Callback for any service event posted on the
- *			    control port
+ * qmi_svc_event_notify() - Callback for any service event posted on the control port
  * @event:	The event posted on the control port.
  * @data:	Any out-of-band data associated with event.
  * @odata_len:	Length of the out-of-band data, if any.
@@ -2074,7 +2093,7 @@ static void qmi_svc_event_worker(struct work_struct *work)
  * interface regarding any incoming service related events. It is registered
  * during service event control port creation.
  */
-static void qmi_svc_event_notify(unsigned int event, void *data,
+static void qmi_svc_event_notify(unsigned event, void *data,
 				size_t odata_len, void *priv)
 {
 	if (event == IPC_ROUTER_CTRL_CMD_NEW_SERVER
@@ -2106,6 +2125,8 @@ static void qmi_svc_event_notifier_init(void)
 		return;
 	}
 	msm_ipc_router_bind_control_port(qmi_svc_event_notifier_port);
+
+	return;
 }
 
 /**

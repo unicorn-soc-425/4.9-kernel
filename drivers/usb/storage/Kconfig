@@ -41,7 +41,7 @@ config USB_STORAGE_REALTEK
 
 config REALTEK_AUTOPM
 	bool "Realtek Card Reader autosuspend support"
-	depends on USB_STORAGE_REALTEK && PM
+	depends on USB_STORAGE_REALTEK && PM_RUNTIME
 	default y
 
 config USB_STORAGE_DATAFAB
@@ -214,12 +214,7 @@ config USB_UAS
 	  If you compile this driver as a module, it will be named uas.
 
 config USB_STORAGE_DETECT
-	boolean "USB storage detect function"
-	depends on USB && SCSI
-	depends on USB_STORAGE
+	bool "Detect inserting sdcard"
+	depends on USB
 	help
-	  This feature enables to detect inserting or removing
-          sd card in sd reader device.
-          This must to be defined in /usb/storage/Kconfig 
-          directory originally. But this feature is defined
-          in this Kconfig to gather samsung feature about usb host.
+	  This is samsung patch

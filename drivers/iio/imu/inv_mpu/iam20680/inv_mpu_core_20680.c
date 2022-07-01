@@ -918,7 +918,7 @@ static ssize_t read_gyro_boot_sample_store(struct device *dev,
 	if (err)
 		return err;
 	if (enable > 1) {
-		dev_err(st->dev,
+		err = dev_err(st->dev,
 				"Invalid value of input, input=%ld\n", enable);
 		return -EINVAL;
 	}
@@ -954,7 +954,7 @@ static ssize_t read_acc_boot_sample_store(struct device *dev,
 	if (err)
 		return err;
 	if (enable > 1) {
-		dev_err(st->dev,
+		err = dev_err(st->dev,
 				"Invalid value of input, input=%ld\n", enable);
 		return -EINVAL;
 	}
@@ -976,9 +976,9 @@ static DEVICE_ATTR(out_temperature, S_IRUGO | S_IWUSR,
 			inv_temperature_show, NULL);
 static DEVICE_ATTR(misc_self_test, S_IRUGO | S_IWUSR, inv_self_test, NULL);
 #ifdef CONFIG_ENABLE_IAM_ACC_GYRO_BUFFERING
-static IIO_DEVICE_ATTR(read_acc_boot_sample, 0644,
+static IIO_DEVICE_ATTR(read_acc_boot_sample, S_IRUGO | S_IWUSR,
 	read_acc_boot_sample_show, read_acc_boot_sample_store, SENSOR_L_ACCEL);
-static IIO_DEVICE_ATTR(read_gyro_boot_sample, 0644,
+static IIO_DEVICE_ATTR(read_gyro_boot_sample, S_IRUGO | S_IWUSR,
 	read_gyro_boot_sample_show, read_gyro_boot_sample_store, SENSOR_L_GYRO);
 #endif
 

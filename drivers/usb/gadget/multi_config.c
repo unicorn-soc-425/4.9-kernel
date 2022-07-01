@@ -95,7 +95,7 @@ unsigned count_multi_config(struct usb_configuration *c, unsigned count)
 		if (!strcmp(f->name, MULTI_FUNCTION_1)) {
 			USB_DBG("%s +\n", MULTI_FUNCTION_1);
 			f_first = 1;
-        } else if (!strcmp(f->name, MULTI_FUNCTION_2) ||
+		} else if (!strcmp(f->name, MULTI_FUNCTION_2) ||
 				!strcmp(f->name, MULTI_FUNCTION_3)) {
 			USB_DBG("%s +\n", f->name);
 			f_second = 1;

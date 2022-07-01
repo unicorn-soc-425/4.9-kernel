@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -31,17 +31,15 @@
 #include <linux/of_gpio.h>
 #include <linux/of_address.h>
 #include <linux/io.h>
+#include <linux/sec_debug.h>
 #include <linux/dma-mapping.h>
 #include <soc/qcom/ramdump.h>
 #include <soc/qcom/subsystem_restart.h>
 #include <soc/qcom/secure_buffer.h>
-#include <soc/qcom/smem.h>
-#include <linux/kthread.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/setup.h>
-#define CREATE_TRACE_POINTS
-#include <trace/events/trace_msm_pil_event.h>
+#include <asm-generic/io-64-nonatomic-lo-hi.h>
 
 #include "peripheral-loader.h"
 
@@ -57,9 +55,7 @@
 #endif
 
 #define PIL_NUM_DESC		10
-#define MAX_LEN 96
 static void __iomem *pil_info_base;
-static struct md_global_toc *g_md_toc;
 
 /**
  * proxy_timeout - Override for proxy vote timeouts
@@ -68,12 +64,10 @@ static struct md_global_toc *g_md_toc;
  * >0: Specify a custom timeout in ms
  */
 static int proxy_timeout_ms = -1;
-module_param(proxy_timeout_ms, int, 0644);
+module_param(proxy_timeout_ms, int, S_IRUGO | S_IWUSR);
 
 static bool disable_timeouts;
-
-static struct workqueue_struct *pil_wq;
-
+static const char firmware_error_msg[] = "firmware_error\n";
 /**
  * struct pil_mdt - Representation of <name>.mdt file in memory
  * @hdr: ELF32 header
@@ -131,7 +125,6 @@ struct pil_priv {
 	struct wakeup_source ws;
 	char wname[32];
 	struct pil_desc *desc;
-	int num_segs;
 	struct list_head segs;
 	phys_addr_t entry_addr;
 	phys_addr_t base_addr;
@@ -144,115 +137,6 @@ struct pil_priv {
 	size_t region_size;
 };
 
-static int pil_do_minidump(struct pil_desc *desc, void *ramdump_dev)
-{
-	struct md_ss_region __iomem *region_info_ss;
-	struct md_ss_region __iomem *region_info_pdr;
-	struct ramdump_segment *ramdump_segs, *s;
-	struct pil_priv *priv = desc->priv;
-	void __iomem *subsys_segtable_base_ss;
-	void __iomem *subsys_segtable_base_pdr;
-	u64 ss_region_ptr = 0;
-	void __iomem *offset_ss;
-	void __iomem *offset_pdr;
-	int ss_mdump_seg_cnt_ss = 0, ss_mdump_seg_cnt_pdr = 0, total_segs;
-	int ss_valid_seg_cnt;
-	int ret, i;
-
-	if (!ramdump_dev)
-		return -ENODEV;
-
-	ss_region_ptr = desc->minidump_ss->md_ss_smem_regions_baseptr;
-	ss_mdump_seg_cnt_ss = desc->minidump_ss->ss_region_count;
-	subsys_segtable_base_ss =
-		ioremap((unsigned long)ss_region_ptr,
-		ss_mdump_seg_cnt_ss * sizeof(struct md_ss_region));
-	region_info_ss =
-		(struct md_ss_region __iomem *)subsys_segtable_base_ss;
-	if (!region_info_ss)
-		return -EINVAL;
-	pr_info("Minidump : SS Segments in minidump 0x%x\n",
-		ss_mdump_seg_cnt_ss);
-
-	if (desc->minidump_pdr &&
-		(desc->minidump_pdr->md_ss_enable_status == MD_SS_ENABLED)) {
-		ss_region_ptr = desc->minidump_pdr->md_ss_smem_regions_baseptr;
-		ss_mdump_seg_cnt_pdr = desc->minidump_pdr->ss_region_count;
-		subsys_segtable_base_pdr =
-			ioremap((unsigned long)ss_region_ptr,
-			ss_mdump_seg_cnt_pdr * sizeof(struct md_ss_region));
-		region_info_pdr =
-			(struct md_ss_region __iomem *)subsys_segtable_base_pdr;
-		if (!region_info_pdr)
-			return -EINVAL;
-		pr_info("Minidump : PDR Segments in minidump 0x%x\n",
-			ss_mdump_seg_cnt_pdr);
-	}
-	total_segs = ss_mdump_seg_cnt_ss + ss_mdump_seg_cnt_pdr;
-	ramdump_segs = kcalloc(total_segs,
-			       sizeof(*ramdump_segs), GFP_KERNEL);
-	if (!ramdump_segs)
-		return -ENOMEM;
-
-	if (desc->subsys_vmid > 0)
-		ret = pil_assign_mem_to_linux(desc, priv->region_start,
-			(priv->region_end - priv->region_start));
-
-	s = ramdump_segs;
-	ss_valid_seg_cnt = total_segs;
-	for (i = 0; i < ss_mdump_seg_cnt_ss; i++) {
-		memcpy(&offset_ss, &region_info_ss, sizeof(region_info_ss));
-		offset_ss = offset_ss + sizeof(region_info_ss->name) +
-				sizeof(region_info_ss->seq_num);
-		if (__raw_readl(offset_ss) == MD_REGION_VALID) {
-			memcpy(&s->name, &region_info_ss,
-				sizeof(region_info_ss));
-			offset_ss = offset_ss +
-				sizeof(region_info_ss->md_valid);
-			s->address = __raw_readl(offset_ss);
-			offset_ss = offset_ss +
-				sizeof(region_info_ss->region_base_address);
-			s->size = __raw_readl(offset_ss);
-			pr_info("Minidump : Dumping segment %s with address 0x%lx and size 0x%x\n",
-				s->name, s->address, (unsigned int)s->size);
-		} else
-			ss_valid_seg_cnt--;
-		s++;
-		region_info_ss++;
-	}
-
-	for (i = 0; i < ss_mdump_seg_cnt_pdr; i++) {
-		memcpy(&offset_pdr, &region_info_pdr, sizeof(region_info_pdr));
-		offset_pdr = offset_pdr + sizeof(region_info_pdr->name) +
-				sizeof(region_info_pdr->seq_num);
-		if (__raw_readl(offset_pdr) == MD_REGION_VALID) {
-			memcpy(&s->name, &region_info_pdr,
-				sizeof(region_info_pdr));
-			offset_pdr = offset_pdr +
-				sizeof(region_info_pdr->md_valid);
-			s->address = __raw_readl(offset_pdr);
-			offset_pdr = offset_pdr +
-				sizeof(region_info_pdr->region_base_address);
-			s->size = __raw_readl(offset_pdr);
-			pr_info("Minidump : Dumping segment %s with address 0x%lx and size 0x%x\n",
-				s->name, s->address, (unsigned int)s->size);
-		} else
-			ss_valid_seg_cnt--;
-		s++;
-		region_info_pdr++;
-	}
-	ret = do_minidump(ramdump_dev, ramdump_segs, ss_valid_seg_cnt);
-	kfree(ramdump_segs);
-	if (ret)
-		pil_err(desc, "%s: Minidump collection failed for subsys %s rc:%d\n",
-			__func__, desc->name, ret);
-
-	if (desc->subsys_vmid > 0)
-		ret = pil_assign_mem_to_subsys(desc, priv->region_start,
-			(priv->region_end - priv->region_start));
-	return ret;
-}
-
 /**
  * pil_do_ramdump() - Ramdump an image
  * @desc: descriptor from pil_desc_init()
@@ -261,48 +145,13 @@ static int pil_do_minidump(struct pil_desc *desc, void *ramdump_dev)
  * Calls the ramdump API with a list of segments generated from the addresses
  * that the descriptor corresponds to.
  */
-int pil_do_ramdump(struct pil_desc *desc,
-		   void *ramdump_dev, void *minidump_dev)
+int pil_do_ramdump(struct pil_desc *desc, void *ramdump_dev)
 {
-	struct ramdump_segment *ramdump_segs, *s;
 	struct pil_priv *priv = desc->priv;
 	struct pil_seg *seg;
 	int count = 0, ret;
-	u32 encryption_status = 0;
+	struct ramdump_segment *ramdump_segs, *s;
 
-	if (desc->minidump_ss) {
-		pr_info("Minidump : md_ss_toc->md_ss_toc_init is 0x%x\n",
-			(unsigned int)desc->minidump_ss->md_ss_toc_init);
-		pr_info("Minidump : md_ss_toc->md_ss_enable_status is 0x%x\n",
-			(unsigned int)desc->minidump_ss->md_ss_enable_status);
-		pr_info("Minidump : md_ss_toc->encryption_status is 0x%x\n",
-			(unsigned int)desc->minidump_ss->encryption_status);
-		pr_info("Minidump : md_ss_toc->ss_region_count is 0x%x\n",
-			(unsigned int)desc->minidump_ss->ss_region_count);
-		pr_info("Minidump : md_ss_toc->md_ss_smem_regions_baseptr is 0x%x\n",
-			(unsigned int)
-			desc->minidump_ss->md_ss_smem_regions_baseptr);
-		/**
-		 * Collect minidump if SS ToC is valid and segment table
-		 * is initialized in memory and encryption status is set.
-		 */
-		encryption_status = desc->minidump_ss->encryption_status;
-
-		if ((desc->minidump_ss->md_ss_smem_regions_baseptr != 0) &&
-			(desc->minidump_ss->md_ss_toc_init == true) &&
-			(desc->minidump_ss->md_ss_enable_status ==
-				MD_SS_ENABLED)) {
-			if (encryption_status == MD_SS_ENCR_DONE ||
-				encryption_status == MD_SS_ENCR_NOTREQ) {
-				pr_info("Minidump : Dumping for %s\n",
-					desc->name);
-				return pil_do_minidump(desc, minidump_dev);
-			}
-			pr_info("Minidump : aborted for %s\n", desc->name);
-			return -EINVAL;
-		}
-	}
-	pr_debug("Continuing with full SSR dump for %s\n", desc->name);
 	list_for_each_entry(seg, &priv->segs, list)
 		count++;
 
@@ -346,8 +195,8 @@ int pil_assign_mem_to_subsys(struct pil_desc *desc, phys_addr_t addr,
 
 	ret = hyp_assign_phys(addr, size, srcVM, 1, destVM, destVMperm, 1);
 	if (ret)
-		pil_err(desc, "%s: failed for %pa address of size %zx - subsys VMid %d rc:%d\n",
-				__func__, &addr, size, desc->subsys_vmid, ret);
+		pil_err(desc, "%s: failed for %pa address of size %zx - subsys VMid %d\n",
+				__func__, &addr, size, desc->subsys_vmid);
 	return ret;
 }
 EXPORT_SYMBOL(pil_assign_mem_to_subsys);
@@ -362,8 +211,8 @@ int pil_assign_mem_to_linux(struct pil_desc *desc, phys_addr_t addr,
 
 	ret = hyp_assign_phys(addr, size, srcVM, 1, destVM, destVMperm, 1);
 	if (ret)
-		panic("%s: failed for %pa address of size %zx - subsys VMid %d rc:%d\n",
-				__func__, &addr, size, desc->subsys_vmid, ret);
+		panic("%s: failed for %pa address of size %zx - subsys VMid %d. Fatal error.\n",
+				__func__, &addr, size, desc->subsys_vmid);
 
 	return ret;
 }
@@ -379,8 +228,8 @@ int pil_assign_mem_to_subsys_and_linux(struct pil_desc *desc,
 
 	ret = hyp_assign_phys(addr, size, srcVM, 1, destVM, destVMperm, 2);
 	if (ret)
-		pil_err(desc, "%s: failed for %pa address of size %zx - subsys VMid %d rc:%d\n",
-				__func__, &addr, size, desc->subsys_vmid, ret);
+		pil_err(desc, "%s: failed for %pa address of size %zx - subsys VMid %d\n",
+				__func__, &addr, size, desc->subsys_vmid);
 
 	return ret;
 }
@@ -433,7 +282,6 @@ static void pil_proxy_unvote_work(struct work_struct *work)
 {
 	struct delayed_work *delayed = to_delayed_work(work);
 	struct pil_priv *priv = container_of(delayed, struct pil_priv, proxy);
-
 	__pil_proxy_unvote(priv);
 }
 
@@ -513,9 +361,9 @@ static struct pil_seg *pil_init_seg(const struct pil_desc *desc,
 	struct pil_seg *seg;
 
 	if (!reloc && memblock_overlaps_memory(phdr->p_paddr, phdr->p_memsz)) {
-		pil_err(desc, "Segment not relocatable,kernel memory would be overwritten[%#08lx, %#08lx)\n",
-		(unsigned long)phdr->p_paddr,
-		(unsigned long)(phdr->p_paddr + phdr->p_memsz));
+		pil_err(desc, "kernel memory would be overwritten [%#08lx, %#08lx)\n",
+			(unsigned long)phdr->p_paddr,
+			(unsigned long)(phdr->p_paddr + phdr->p_memsz));
 		return ERR_PTR(-EPERM);
 	}
 
@@ -589,12 +437,11 @@ static int pil_init_entry_addr(struct pil_priv *priv, const struct pil_mdt *mdt)
 }
 
 static int pil_alloc_region(struct pil_priv *priv, phys_addr_t min_addr,
-				phys_addr_t max_addr, size_t align,
-				size_t mdt_size)
+				phys_addr_t max_addr, size_t align)
 {
 	void *region;
 	size_t size = max_addr - min_addr;
-	size_t aligned_size = max(size, mdt_size);
+	size_t aligned_size;
 
 	/* Don't reallocate due to fragmentation concerns, just sanity check */
 	if (priv->region) {
@@ -605,18 +452,17 @@ static int pil_alloc_region(struct pil_priv *priv, phys_addr_t min_addr,
 	}
 
 	if (align > SZ_4M)
-		aligned_size = ALIGN(aligned_size, SZ_4M);
-	else if (align > SZ_1M)
-		aligned_size = ALIGN(aligned_size, SZ_1M);
+		aligned_size = ALIGN(size, SZ_4M);
 	else
-		aligned_size = ALIGN(aligned_size, SZ_4K);
+		aligned_size = ALIGN(size, SZ_1M);
 
-	priv->desc->attrs = 0;
-	priv->desc->attrs |= DMA_ATTR_SKIP_ZEROING | DMA_ATTR_NO_KERNEL_MAPPING;
+	init_dma_attrs(&priv->desc->attrs);
+	dma_set_attr(DMA_ATTR_SKIP_ZEROING, &priv->desc->attrs);
+	dma_set_attr(DMA_ATTR_NO_KERNEL_MAPPING, &priv->desc->attrs);
 
 	region = dma_alloc_attrs(priv->desc->dev, aligned_size,
 				&priv->region_start, GFP_KERNEL,
-				priv->desc->attrs);
+				&priv->desc->attrs);
 
 	if (region == NULL) {
 		pil_err(priv->desc, "Failed to allocate relocatable region of size %zx\n",
@@ -634,8 +480,7 @@ static int pil_alloc_region(struct pil_priv *priv, phys_addr_t min_addr,
 	return 0;
 }
 
-static int pil_setup_region(struct pil_priv *priv, const struct pil_mdt *mdt,
-				size_t mdt_size)
+static int pil_setup_region(struct pil_priv *priv, const struct pil_mdt *mdt)
 {
 	const struct elf32_phdr *phdr;
 	phys_addr_t min_addr_r, min_addr_n, max_addr_r, max_addr_n, start, end;
@@ -680,8 +525,7 @@ static int pil_setup_region(struct pil_priv *priv, const struct pil_mdt *mdt,
 	max_addr_r = ALIGN(max_addr_r, SZ_4K);
 
 	if (relocatable) {
-		ret = pil_alloc_region(priv, min_addr_r, max_addr_r, align,
-					mdt_size);
+		ret = pil_alloc_region(priv, min_addr_r, max_addr_r, align);
 	} else {
 		priv->region_start = min_addr_n;
 		priv->region_end = max_addr_n;
@@ -712,15 +556,14 @@ static int pil_cmp_seg(void *priv, struct list_head *a, struct list_head *b)
 	return ret;
 }
 
-static int pil_init_mmap(struct pil_desc *desc, const struct pil_mdt *mdt,
-			size_t mdt_size)
+static int pil_init_mmap(struct pil_desc *desc, const struct pil_mdt *mdt)
 {
 	struct pil_priv *priv = desc->priv;
 	const struct elf32_phdr *phdr;
 	struct pil_seg *seg;
 	int i, ret;
 
-	ret = pil_setup_region(priv, mdt, mdt_size);
+	ret = pil_setup_region(priv, mdt);
 	if (ret)
 		return ret;
 
@@ -728,7 +571,6 @@ static int pil_init_mmap(struct pil_desc *desc, const struct pil_mdt *mdt,
 	pil_info(desc, "loading from %pa to %pa\n", &priv->region_start,
 							&priv->region_end);
 
-	priv->num_segs = 0;
 	for (i = 0; i < mdt->hdr.e_phnum; i++) {
 		phdr = &mdt->phdr[i];
 		if (!segment_is_loadable(phdr))
@@ -739,7 +581,6 @@ static int pil_init_mmap(struct pil_desc *desc, const struct pil_mdt *mdt,
 			return PTR_ERR(seg);
 
 		list_add_tail(&seg->list, &priv->segs);
-		priv->num_segs++;
 	}
 	list_sort(NULL, &priv->segs, pil_cmp_seg);
 
@@ -748,7 +589,7 @@ static int pil_init_mmap(struct pil_desc *desc, const struct pil_mdt *mdt,
 
 struct pil_map_fw_info {
 	void *region;
-	unsigned long attrs;
+	struct dma_attrs attrs;
 	phys_addr_t base_addr;
 	struct device *dev;
 };
@@ -807,7 +648,7 @@ static void *map_fw_mem(phys_addr_t paddr, size_t size, void *data)
 	struct pil_map_fw_info *info = data;
 
 	return dma_remap(info->dev, info->region, paddr, size,
-					info->attrs);
+					&info->attrs);
 }
 
 static void unmap_fw_mem(void *vaddr, size_t size, void *data)
@@ -823,8 +664,6 @@ static int pil_load_seg(struct pil_desc *desc, struct pil_seg *seg)
 	phys_addr_t paddr;
 	char fw_name[30];
 	int num = seg->num;
-	const struct firmware *fw = NULL;
-	void __iomem *firmware_buf;
 	struct pil_map_fw_info map_fw_info = {
 		.attrs = desc->attrs,
 		.region = desc->priv->region,
@@ -836,31 +675,23 @@ static int pil_load_seg(struct pil_desc *desc, struct pil_seg *seg)
 	if (seg->filesz) {
 		snprintf(fw_name, ARRAY_SIZE(fw_name), "%s.b%02d",
 				desc->fw_name, num);
-		firmware_buf = desc->map_fw_mem(seg->paddr, seg->filesz,
-						map_data);
-		if (!firmware_buf) {
-			pil_err(desc, "Failed to map memory for firmware buffer\n");
-			return -ENOMEM;
-		}
-
-		ret = request_firmware_into_buf(&fw, fw_name, desc->dev,
-						firmware_buf, seg->filesz);
-		desc->unmap_fw_mem(firmware_buf, seg->filesz, map_data);
-
-		if (ret) {
-			pil_err(desc, "Failed to locate blob %s or blob is too big(rc:%d)\n",
-				fw_name, ret);
+		ret = request_firmware_into_buf(fw_name, desc->dev, seg->paddr,
+					      seg->filesz, desc->map_fw_mem,
+					      desc->unmap_fw_mem, map_data);
+		if (ret < 0) {
+			pil_err(desc, "Failed to locate blob %s or blob is too big.\n",
+				fw_name);
+			subsys_set_error(desc->subsys_dev, firmware_error_msg);
 			return ret;
 		}
 
-		if (fw->size != seg->filesz) {
+		if (ret != seg->filesz) {
 			pil_err(desc, "Blob size %u doesn't match %lu\n",
 					ret, seg->filesz);
-			release_firmware(fw);
+			subsys_set_error(desc->subsys_dev, firmware_error_msg);
 			return -EPERM;
 		}
-
-		release_firmware(fw);
+		ret = 0;
 	}
 
 	/* Zero out trailing memory */
@@ -886,9 +717,10 @@ static int pil_load_seg(struct pil_desc *desc, struct pil_seg *seg)
 
 	if (desc->ops->verify_blob) {
 		ret = desc->ops->verify_blob(desc, seg->paddr, seg->sz);
-		if (ret)
-			pil_err(desc, "Blob%u failed verification(rc:%d)\n",
-								num, ret);
+		if (ret) {
+			pil_err(desc, "Blob%u failed verification\n", num);
+			subsys_set_error(desc->subsys_dev, firmware_error_msg);
+		}
 	}
 
 	return ret;
@@ -929,114 +761,11 @@ static int pil_parse_devicetree(struct pil_desc *desc)
 		}
 	}
 	desc->proxy_unvote_irq = clk_ready;
-
-	desc->sequential_load = of_property_read_bool(ofnode,
-						"qcom,sequential-fw-load");
 	return 0;
-}
-
-static int pil_notify_aop(struct pil_desc *desc, char *status)
-{
-	struct qmp_pkt pkt;
-	char mbox_msg[MAX_LEN];
-
-	if (!desc->signal_aop)
-		return 0;
-
-	snprintf(mbox_msg, MAX_LEN,
-		"{class: image, res: load_state, name: %s, val: %s}",
-		desc->name, status);
-	pkt.size = MAX_LEN;
-	pkt.data = mbox_msg;
-
-	return mbox_send_message(desc->mbox, &pkt);
 }
 
 /* Synchronize request_firmware() with suspend */
 static DECLARE_RWSEM(pil_pm_rwsem);
-
-struct pil_seg_data {
-	struct pil_desc *desc;
-	struct pil_seg *seg;
-	struct work_struct load_seg_work;
-	int retval;
-};
-
-static void pil_load_seg_work_fn(struct work_struct *work)
-{
-	struct pil_seg_data *pil_seg_data = container_of(work,
-							struct pil_seg_data,
-							load_seg_work);
-	struct pil_desc *desc = pil_seg_data->desc;
-	struct pil_seg *seg = pil_seg_data->seg;
-
-	pil_seg_data->retval = pil_load_seg(desc, seg);
-}
-
-static int pil_load_segs(struct pil_desc *desc)
-{
-	int ret = 0;
-	int seg_id = 0;
-	struct pil_priv *priv = desc->priv;
-	struct pil_seg_data *pil_seg_data;
-	struct pil_seg *seg;
-	unsigned long *err_map;
-
-	err_map = kcalloc(BITS_TO_LONGS(priv->num_segs), sizeof(unsigned long),
-				GFP_KERNEL);
-	if (!err_map)
-		return -ENOMEM;
-
-	pil_seg_data = kcalloc(priv->num_segs, sizeof(*pil_seg_data),
-				GFP_KERNEL);
-	if (!pil_seg_data) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	/* Initialize and spawn a thread for each segment */
-	list_for_each_entry(seg, &desc->priv->segs, list) {
-		pil_seg_data[seg_id].desc = desc;
-		pil_seg_data[seg_id].seg = seg;
-
-		INIT_WORK(&pil_seg_data[seg_id].load_seg_work,
-				pil_load_seg_work_fn);
-		queue_work(pil_wq, &pil_seg_data[seg_id].load_seg_work);
-
-		seg_id++;
-	}
-
-	bitmap_zero(err_map, priv->num_segs);
-
-	/* Wait for the parallel loads to finish */
-	seg_id = 0;
-	list_for_each_entry(seg, &desc->priv->segs, list) {
-		flush_work(&pil_seg_data[seg_id].load_seg_work);
-
-		/*
-		 * Don't exit if one of the thread fails. Wait for others to
-		 * complete. Bitmap the return codes we get from the threads.
-		 */
-		if (pil_seg_data[seg_id].retval) {
-			pil_err(desc,
-				"Failed to load the segment[%d]. ret = %d\n",
-				seg_id, pil_seg_data[seg_id].retval);
-			__set_bit(seg_id, err_map);
-		}
-
-		seg_id++;
-	}
-
-	kfree(pil_seg_data);
-
-	/* Each segment can fail due to different reason. Send a generic err */
-	if (!bitmap_empty(err_map, priv->num_segs))
-		ret = -EFAULT;
-
-out:
-	kfree(err_map);
-	return ret;
-}
 
 /**
  * pil_boot() - Load a peripheral image into memory and boot it
@@ -1048,19 +777,14 @@ int pil_boot(struct pil_desc *desc)
 {
 	int ret;
 	char fw_name[30];
-	struct pil_seg *seg;
 	const struct pil_mdt *mdt;
 	const struct elf32_hdr *ehdr;
+	struct pil_seg *seg;
 	const struct firmware *fw;
 	struct pil_priv *priv = desc->priv;
 	bool mem_protect = false;
 	bool hyp_assign = false;
-
-	ret = pil_notify_aop(desc, "on");
-	if (ret < 0) {
-		pil_err(desc, "Failed to send ON message to AOP rc:%d\n", ret);
-		return ret;
-	}
+	bool secure_check_fail = false;
 
 	if (desc->shutdown_fail)
 		pil_err(desc, "Subsystem shutdown failed previously!\n");
@@ -1072,12 +796,13 @@ int pil_boot(struct pil_desc *desc)
 	snprintf(fw_name, sizeof(fw_name), "%s.mdt", desc->fw_name);
 	ret = request_firmware(&fw, fw_name, desc->dev);
 	if (ret) {
-		pil_err(desc, "Failed to locate %s(rc:%d)\n", fw_name, ret);
+		pil_err(desc, "Failed to locate %s\n", fw_name);
 		goto out;
 	}
 
 	if (fw->size < sizeof(*ehdr)) {
 		pil_err(desc, "Not big enough to be an elf header\n");
+		subsys_set_error(desc->subsys_dev, firmware_error_msg);
 		ret = -EIO;
 		goto release_fw;
 	}
@@ -1087,66 +812,56 @@ int pil_boot(struct pil_desc *desc)
 
 	if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG)) {
 		pil_err(desc, "Not an elf header\n");
+		subsys_set_error(desc->subsys_dev, firmware_error_msg);
 		ret = -EIO;
 		goto release_fw;
 	}
 
 	if (ehdr->e_phnum == 0) {
 		pil_err(desc, "No loadable segments\n");
+		subsys_set_error(desc->subsys_dev, firmware_error_msg);
 		ret = -EIO;
 		goto release_fw;
 	}
 	if (sizeof(struct elf32_phdr) * ehdr->e_phnum +
 	    sizeof(struct elf32_hdr) > fw->size) {
 		pil_err(desc, "Program headers not within mdt\n");
+		subsys_set_error(desc->subsys_dev, firmware_error_msg);
 		ret = -EIO;
 		goto release_fw;
 	}
 
-	ret = pil_init_mmap(desc, mdt, fw->size);
+	ret = pil_init_mmap(desc, mdt);
 	if (ret)
 		goto release_fw;
 
 	desc->priv->unvoted_flag = 0;
 	ret = pil_proxy_vote(desc);
 	if (ret) {
-		pil_err(desc, "Failed to proxy vote(rc:%d)\n", ret);
+		pil_err(desc, "Failed to proxy vote\n");
 		goto release_fw;
 	}
 
-	trace_pil_event("before_init_image", desc);
 	if (desc->ops->init_image)
 		ret = desc->ops->init_image(desc, fw->data, fw->size,
-				priv->region_start, priv->region);
+			priv->region_start,
+			priv->region_end - priv->region_start);
 	if (ret) {
-		pil_err(desc, "Initializing image failed(rc:%d)\n", ret);
+		pil_err(desc, "Invalid firmware metadata\n");
+		subsys_set_error(desc->subsys_dev, firmware_error_msg);
+		secure_check_fail = true;
 		goto err_boot;
 	}
 
-	trace_pil_event("before_mem_setup", desc);
 	if (desc->ops->mem_setup)
 		ret = desc->ops->mem_setup(desc, priv->region_start,
 				priv->region_end - priv->region_start);
 	if (ret) {
-		pil_err(desc, "Memory setup error(rc:%d)\n", ret);
+		pil_err(desc, "Memory setup error\n");
 		goto err_deinit_image;
 	}
 
 	if (desc->subsys_vmid > 0) {
-		/**
-		 * In case of modem ssr, we need to assign memory back to linux.
-		 * This is not true after cold boot since linux already owns it.
-		 * Also for secure boot devices, modem memory has to be released
-		 * after MBA is booted
-		 */
-		trace_pil_event("before_assign_mem", desc);
-		if (desc->modem_ssr) {
-			ret = pil_assign_mem_to_linux(desc, priv->region_start,
-				(priv->region_end - priv->region_start));
-			if (ret)
-				pil_err(desc, "Failed to assign to linux, ret- %d\n",
-								ret);
-		}
 		ret = pil_assign_mem_to_subsys_and_linux(desc,
 				priv->region_start,
 				(priv->region_end - priv->region_start));
@@ -1158,22 +873,13 @@ int pil_boot(struct pil_desc *desc)
 		hyp_assign = true;
 	}
 
-	trace_pil_event("before_load_seg", desc);
-
-	if (desc->sequential_load) {
-		list_for_each_entry(seg, &desc->priv->segs, list) {
-			ret = pil_load_seg(desc, seg);
-			if (ret)
-				goto err_deinit_image;
-		}
-	} else {
-		ret = pil_load_segs(desc);
+	list_for_each_entry(seg, &desc->priv->segs, list) {
+		ret = pil_load_seg(desc, seg);
 		if (ret)
 			goto err_deinit_image;
 	}
 
 	if (desc->subsys_vmid > 0) {
-		trace_pil_event("before_reclaim_mem", desc);
 		ret =  pil_reclaim_mem(desc, priv->region_start,
 				(priv->region_end - priv->region_start),
 				desc->subsys_vmid);
@@ -1185,13 +891,13 @@ int pil_boot(struct pil_desc *desc)
 		hyp_assign = false;
 	}
 
-	trace_pil_event("before_auth_reset", desc);
 	ret = desc->ops->auth_and_reset(desc);
 	if (ret) {
-		pil_err(desc, "Failed to bring out of reset(rc:%d)\n", ret);
+		pil_err(desc, "Failed to bring out of reset\n");
+		subsys_set_error(desc->subsys_dev, firmware_error_msg);
+		secure_check_fail = true;
 		goto err_auth_and_reset;
 	}
-	trace_pil_event("reset_done", desc);
 	pil_info(desc, "Brought out of reset\n");
 	desc->modem_ssr = false;
 err_auth_and_reset:
@@ -1224,11 +930,15 @@ out:
 				pil_clear_segment(desc);
 			dma_free_attrs(desc->dev, priv->region_size,
 					priv->region, priv->region_start,
-					desc->attrs);
+					&desc->attrs);
 			priv->region = NULL;
 		}
 		pil_release_mmap(desc);
-		pil_notify_aop(desc, "off");
+		
+		if (secure_check_fail && (ret == -EINVAL) &&
+		    (!strcmp(desc->name, "mba") ||
+		     !strcmp(desc->name, "modem")))
+			sec_peripheral_secure_check_fail();
 	}
 	return ret;
 }
@@ -1240,7 +950,6 @@ EXPORT_SYMBOL(pil_boot);
  */
 void pil_shutdown(struct pil_desc *desc)
 {
-	int ret;
 	struct pil_priv *priv = desc->priv;
 
 	if (desc->ops->shutdown) {
@@ -1258,9 +967,6 @@ void pil_shutdown(struct pil_desc *desc)
 		pil_proxy_unvote(desc, 1);
 	else
 		flush_delayed_work(&priv->proxy);
-	ret = pil_notify_aop(desc, "off");
-	if (ret < 0)
-		pr_warn("pil: failed to send OFF message to AOP rc:%d\n", ret);
 	desc->modem_ssr = true;
 }
 EXPORT_SYMBOL(pil_shutdown);
@@ -1278,7 +984,7 @@ void pil_free_memory(struct pil_desc *desc)
 			pil_assign_mem_to_linux(desc, priv->region_start,
 				(priv->region_end - priv->region_start));
 		dma_free_attrs(desc->dev, priv->region_size,
-				priv->region, priv->region_start, desc->attrs);
+				priv->region, priv->region_start, &desc->attrs);
 		priv->region = NULL;
 	}
 }
@@ -1292,7 +998,7 @@ bool is_timeout_disabled(void)
 }
 /**
  * pil_desc_init() - Initialize a pil descriptor
- * @desc: descriptor to initialize
+ * @desc: descriptor to intialize
  *
  * Initialize a pil descriptor for use by other pil functions. This function
  * must be called before calling pil_boot() or pil_shutdown().
@@ -1302,11 +1008,9 @@ bool is_timeout_disabled(void)
 int pil_desc_init(struct pil_desc *desc)
 {
 	struct pil_priv *priv;
-	void __iomem *addr;
-	void *ss_toc_addr;
 	int ret;
+	void __iomem *addr;
 	char buf[sizeof(priv->info->name)];
-	struct device_node *ofnode = desc->dev->of_node;
 
 	if (WARN(desc->ops->proxy_unvote && !desc->ops->proxy_vote,
 				"Invalid proxy voting. Ignoring\n"))
@@ -1326,26 +1030,8 @@ int pil_desc_init(struct pil_desc *desc)
 		addr = pil_info_base + sizeof(struct pil_image_info) * priv->id;
 		priv->info = (struct pil_image_info __iomem *)addr;
 
-		strlcpy(buf, desc->name, sizeof(buf));
+		strncpy(buf, desc->name, sizeof(buf));
 		__iowrite32_copy(priv->info->name, buf, sizeof(buf) / 4);
-	}
-	if (of_property_read_u32(ofnode, "qcom,minidump-id",
-		&desc->minidump_id))
-		pr_err("minidump-id not found for %s\n", desc->name);
-	else {
-		if (g_md_toc && g_md_toc->md_toc_init == true) {
-			ss_toc_addr = &g_md_toc->md_ss_toc[desc->minidump_id];
-			pr_debug("Minidump : ss_toc_addr for ss is %pa and desc->minidump_id is %d\n",
-				&ss_toc_addr, desc->minidump_id);
-			memcpy(&desc->minidump_ss, &ss_toc_addr,
-			       sizeof(ss_toc_addr));
-			ss_toc_addr =
-				&g_md_toc->md_ss_toc[desc->minidump_id + 1];
-			pr_debug("Minidump : ss_toc_addr for pdr is %pa and desc->minidump_id is %d\n",
-				&ss_toc_addr, desc->minidump_id);
-			memcpy(&desc->minidump_pdr, &ss_toc_addr,
-			       sizeof(ss_toc_addr));
-		}
 	}
 
 	ret = pil_parse_devicetree(desc);
@@ -1355,7 +1041,8 @@ int pil_desc_init(struct pil_desc *desc)
 	/* Ignore users who don't make any sense */
 	WARN(desc->ops->proxy_unvote && desc->proxy_unvote_irq == 0
 		 && !desc->proxy_timeout,
-		 "Invalid proxy unvote callback or a proxy timeout of 0 was specified or no proxy unvote IRQ was specified.\n");
+		 "Invalid proxy unvote callback or a proxy timeout of 0"
+		 " was specified or no proxy unvote IRQ was specified.\n");
 
 	if (desc->proxy_unvote_irq) {
 		ret = request_threaded_irq(desc->proxy_unvote_irq,
@@ -1433,7 +1120,6 @@ static int __init msm_pil_init(void)
 	struct device_node *np;
 	struct resource res;
 	int i;
-	unsigned int size;
 
 	np = of_find_compatible_node(NULL, NULL, "qcom,msm-imem-pil");
 	if (!np) {
@@ -1456,19 +1142,6 @@ static int __init msm_pil_init(void)
 	for (i = 0; i < resource_size(&res)/sizeof(u32); i++)
 		writel_relaxed(0, pil_info_base + (i * sizeof(u32)));
 
-	/* Get Global minidump ToC*/
-	g_md_toc = smem_get_entry(SBL_MINIDUMP_SMEM_ID, &size, 0,
-				  SMEM_ANY_HOST_FLAG);
-	pr_debug("Minidump: g_md_toc is %pa\n", &g_md_toc);
-	if (PTR_ERR(g_md_toc) == -EPROBE_DEFER) {
-		pr_err("SMEM is not initialized.\n");
-		return -EPROBE_DEFER;
-	}
-
-	pil_wq = alloc_workqueue("pil_workqueue", WQ_HIGHPRI | WQ_UNBOUND, 0);
-	if (!pil_wq)
-		pr_warn("pil: Defaulting to sequential firmware loading.\n");
-
 out:
 	return register_pm_notifier(&pil_pm_notifier);
 }
@@ -1476,8 +1149,6 @@ device_initcall(msm_pil_init);
 
 static void __exit msm_pil_exit(void)
 {
-	if (pil_wq)
-		destroy_workqueue(pil_wq);
 	unregister_pm_notifier(&pil_pm_notifier);
 	if (pil_info_base)
 		iounmap(pil_info_base);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,21 +20,25 @@
 #include <soc/qcom/scm.h>
 #include <linux/platform_device.h>
 
+#define ACE_OFFSET	0
+#define IO_OFFSET	2
+#define M1_OFFSET	3
+#define M2_OFFSET	4
+#define PCIO_OFFSET	5
 #define ENABLE_MASK_BITS	0x1
 
-#define _VAL(z)			(ENABLE_MASK_BITS << z)
-#define _VALUE(_val, z)		(_val<<(z))
+#define _VAL(z)			(ENABLE_MASK_BITS << z##_OFFSET)
+#define _VALUE(_val, z)		(_val<<(z##_OFFSET))
 #define _WRITE(x, y, z)		(((~(_VAL(z))) & y) | _VALUE(x, z))
 
+#define NR_GLA_REG 6
 #define MODULE_NAME	"gladiator_hang_detect"
 #define MAX_THRES	0xFFFFFFFF
-#define MAX_LEN_SYSFS 12
 
 struct hang_detect {
-	phys_addr_t *threshold;
+	phys_addr_t threshold[NR_GLA_REG];
 	phys_addr_t config;
 	int ACE_enable, IO_enable, M1_enable, M2_enable, PCIO_enable;
-	int ACE_offset, IO_offset, M1_offset, M2_offset, PCIO_offset;
 	uint32_t ACE_threshold, IO_threshold, M1_threshold, M2_threshold,
 			 PCIO_threshold;
 	struct kobject kobj;
@@ -63,71 +67,119 @@ struct gladiator_hang_attr {
 static void set_threshold(int offset, struct hang_detect *hang_dev,
 		int32_t threshold_val)
 {
-	if (offset == hang_dev->ACE_offset)
+	switch (offset) {
+	case ACE_OFFSET:
 		hang_dev->ACE_threshold = threshold_val;
-	else if (offset == hang_dev->IO_offset)
+		break;
+	case IO_OFFSET:
 		hang_dev->IO_threshold = threshold_val;
-	else if (offset == hang_dev->M1_offset)
+		break;
+	case M1_OFFSET:
 		hang_dev->M1_threshold = threshold_val;
-	else if (offset == hang_dev->M2_offset)
+		break;
+	case M2_OFFSET:
 		hang_dev->M2_threshold = threshold_val;
-	else
+		break;
+	case PCIO_OFFSET:
 		hang_dev->PCIO_threshold = threshold_val;
+		break;
+	}
 }
 
 static void get_threshold(int offset, struct hang_detect *hang_dev,
 		uint32_t *reg_value)
 {
-	if (offset == hang_dev->ACE_offset)
+	switch (offset) {
+	case ACE_OFFSET:
 		*reg_value = hang_dev->ACE_threshold;
-	else if (offset == hang_dev->IO_offset)
+	break;
+	case IO_OFFSET:
 		*reg_value = hang_dev->IO_threshold;
-	else if (offset == hang_dev->M1_offset)
+		break;
+	case M1_OFFSET:
 		*reg_value = hang_dev->M1_threshold;
-	else if (offset == hang_dev->M2_offset)
+		break;
+	case M2_OFFSET:
 		*reg_value = hang_dev->M2_threshold;
-	else
+		break;
+	case PCIO_OFFSET:
 		*reg_value = hang_dev->PCIO_threshold;
+		break;
+	}
 }
 
 static void set_enable(int offset, struct hang_detect *hang_dev,
 		int enabled)
 {
-	if (offset == hang_dev->ACE_offset)
+	switch (offset) {
+	case ACE_OFFSET:
 		hang_dev->ACE_enable = enabled;
-	else if (offset == hang_dev->IO_offset)
+		break;
+	case IO_OFFSET:
 		hang_dev->IO_enable = enabled;
-	else if (offset == hang_dev->M1_offset)
+		break;
+	case M1_OFFSET:
 		hang_dev->M1_enable = enabled;
-	else if (offset == hang_dev->M2_offset)
+		break;
+	case M2_OFFSET:
 		hang_dev->M2_enable = enabled;
-	else
+		break;
+	case PCIO_OFFSET:
 		hang_dev->PCIO_enable = enabled;
+		break;
+	}
 }
 
 static void get_enable(int offset, struct hang_detect *hang_dev,
 		uint32_t *reg_value)
 {
-	if (offset == hang_dev->ACE_offset)
+	switch (offset) {
+	case ACE_OFFSET:
 		*reg_value = hang_dev->ACE_enable;
-	else if (offset == hang_dev->IO_offset)
+		break;
+	case IO_OFFSET:
 		*reg_value = hang_dev->IO_enable;
-	else if (offset == hang_dev->M1_offset)
+		break;
+	case M1_OFFSET:
 		*reg_value = hang_dev->M1_enable;
-	else if (offset == hang_dev->M2_offset)
+		break;
+	case M2_OFFSET:
 		*reg_value = hang_dev->M2_enable;
-	else
+		break;
+	case PCIO_OFFSET:
 		*reg_value = hang_dev->PCIO_enable;
+		break;
+	}
 }
 
 static void scm_enable_write(int offset, struct hang_detect *hang_dev,
 		int enabled, uint32_t reg_value, int *ret)
 {
-	*ret = scm_io_write(hang_dev->config,
-			_WRITE(enabled, reg_value, offset));
+	switch (offset) {
+	case ACE_OFFSET:
+		*ret = scm_io_write(hang_dev->config,
+			_WRITE(enabled, reg_value, ACE));
+		break;
+	case IO_OFFSET:
+		*ret = scm_io_write(hang_dev->config,
+				_WRITE(enabled, reg_value, IO));
+		break;
+	case M1_OFFSET:
+		*ret = scm_io_write(hang_dev->config,
+				_WRITE(enabled, reg_value, M1));
+		break;
+	case M2_OFFSET:
+		*ret = scm_io_write(hang_dev->config,
+				_WRITE(enabled, reg_value, M2));
+		break;
+	case PCIO_OFFSET:
+		*ret = scm_io_write(hang_dev->config,
+				_WRITE(enabled, reg_value, PCIO));
+		break;
+	}
 }
 
-static int enable_check(const char *buf, int *enabled_pt)
+static int enable_check(const char *buf , int *enabled_pt)
 {
 	int ret;
 
@@ -147,7 +199,8 @@ static inline ssize_t generic_enable_show(struct kobject *kobj,
 	uint32_t reg_value;
 
 	get_enable(offset, hang_dev, &reg_value);
-	return snprintf(buf, MAX_LEN_SYSFS, "%u\n", reg_value);
+	return snprintf(buf, sizeof(hang_dev->ACE_enable),
+			"%d\n", reg_value);
 }
 
 static inline ssize_t generic_threshold_show(struct kobject *kobj,
@@ -157,7 +210,9 @@ static inline ssize_t generic_threshold_show(struct kobject *kobj,
 	uint32_t reg_value;
 
 	get_threshold(offset, hang_dev, &reg_value);
-	return snprintf(buf, MAX_LEN_SYSFS, "0x%x\n", reg_value);
+	return snprintf(buf, sizeof(hang_dev->ACE_threshold),
+			"%u\n", reg_value);
+
 }
 
 static inline size_t generic_threshold_store(struct kobject *kobj,
@@ -250,18 +305,13 @@ static struct kobj_type gladiator_ktype = {
 static ssize_t show_ace_threshold(struct kobject *kobj, struct attribute *attr,
 				char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_show(kobj, attr, buf, hang_dev->ACE_offset);
+	return generic_threshold_show(kobj, attr, buf, ACE_OFFSET);
 }
 
 static size_t store_ace_threshold(struct kobject *kobj, struct attribute *attr,
 				const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_store(kobj, attr, buf, count,
-					hang_dev->ACE_offset);
+	return generic_threshold_store(kobj, attr, buf, count, ACE_OFFSET);
 }
 GLADIATOR_HANG_ATTR(ace_threshold, S_IRUGO|S_IWUSR, show_ace_threshold,
 					store_ace_threshold);
@@ -269,18 +319,13 @@ GLADIATOR_HANG_ATTR(ace_threshold, S_IRUGO|S_IWUSR, show_ace_threshold,
 static ssize_t show_io_threshold(struct kobject *kobj, struct attribute *attr,
 				char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_show(kobj, attr, buf, hang_dev->IO_offset);
+	return generic_threshold_show(kobj, attr, buf, IO_OFFSET);
 }
 
 static size_t store_io_threshold(struct kobject *kobj, struct attribute *attr,
 				const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_store(kobj, attr, buf, count,
-					hang_dev->IO_offset);
+	return generic_threshold_store(kobj, attr, buf, count, IO_OFFSET);
 }
 GLADIATOR_HANG_ATTR(io_threshold, S_IRUGO|S_IWUSR, show_io_threshold,
 					store_io_threshold);
@@ -288,18 +333,13 @@ GLADIATOR_HANG_ATTR(io_threshold, S_IRUGO|S_IWUSR, show_io_threshold,
 static ssize_t show_m1_threshold(struct kobject *kobj, struct attribute *attr,
 				char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_show(kobj, attr, buf, hang_dev->M1_offset);
+	return generic_threshold_show(kobj, attr, buf, M1_OFFSET);
 }
 
 static size_t store_m1_threshold(struct kobject *kobj, struct attribute *attr,
 				const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_store(kobj, attr, buf, count,
-					hang_dev->M1_offset);
+	return generic_threshold_store(kobj, attr, buf, count, M1_OFFSET);
 }
 GLADIATOR_HANG_ATTR(m1_threshold, S_IRUGO|S_IWUSR, show_m1_threshold,
 					store_m1_threshold);
@@ -307,18 +347,13 @@ GLADIATOR_HANG_ATTR(m1_threshold, S_IRUGO|S_IWUSR, show_m1_threshold,
 static ssize_t show_m2_threshold(struct kobject *kobj, struct attribute *attr,
 				char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_show(kobj, attr, buf, hang_dev->M2_offset);
+	return generic_threshold_show(kobj, attr, buf, M2_OFFSET);
 }
 
 static size_t store_m2_threshold(struct kobject *kobj, struct attribute *attr,
 				const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_store(kobj, attr, buf, count,
-					hang_dev->M2_offset);
+	return generic_threshold_store(kobj, attr, buf, count, M2_OFFSET);
 }
 GLADIATOR_HANG_ATTR(m2_threshold, S_IRUGO|S_IWUSR, show_m2_threshold,
 					store_m2_threshold);
@@ -326,18 +361,13 @@ GLADIATOR_HANG_ATTR(m2_threshold, S_IRUGO|S_IWUSR, show_m2_threshold,
 static ssize_t show_pcio_threshold(struct kobject *kobj, struct attribute *attr,
 				char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_show(kobj, attr, buf, hang_dev->PCIO_offset);
+	return generic_threshold_show(kobj, attr, buf, PCIO_OFFSET);
 }
 
 static size_t store_pcio_threshold(struct kobject *kobj, struct attribute *attr,
 				const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_threshold_store(kobj, attr, buf, count,
-					hang_dev->PCIO_offset);
+	return generic_threshold_store(kobj, attr, buf, count, PCIO_OFFSET);
 }
 GLADIATOR_HANG_ATTR(pcio_threshold, S_IRUGO|S_IWUSR, show_pcio_threshold,
 					store_pcio_threshold);
@@ -345,18 +375,13 @@ GLADIATOR_HANG_ATTR(pcio_threshold, S_IRUGO|S_IWUSR, show_pcio_threshold,
 static ssize_t show_ace_enable(struct kobject *kobj,
 			struct attribute *attr, char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_show(kobj, attr, buf, hang_dev->ACE_offset);
+	return generic_enable_show(kobj, attr, buf, ACE_OFFSET);
 }
 
 static size_t store_ace_enable(struct kobject *kobj,
 			struct attribute *attr, const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_store(kobj, attr, buf, count,
-					hang_dev->ACE_offset);
+	return generic_enable_store(kobj, attr, buf, count, ACE_OFFSET);
 }
 GLADIATOR_HANG_ATTR(ace_enable, S_IRUGO|S_IWUSR, show_ace_enable,
 		store_ace_enable);
@@ -364,18 +389,13 @@ GLADIATOR_HANG_ATTR(ace_enable, S_IRUGO|S_IWUSR, show_ace_enable,
 static ssize_t show_io_enable(struct kobject *kobj,
 			struct attribute *attr, char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_show(kobj, attr, buf, hang_dev->IO_offset);
+	return generic_enable_show(kobj, attr, buf, IO_OFFSET);
 }
 
 static size_t store_io_enable(struct kobject *kobj,
 			struct attribute *attr, const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_store(kobj, attr, buf, count,
-					hang_dev->IO_offset);
+	return generic_enable_store(kobj, attr, buf, count, IO_OFFSET);
 }
 GLADIATOR_HANG_ATTR(io_enable, S_IRUGO|S_IWUSR,
 		show_io_enable, store_io_enable);
@@ -384,18 +404,13 @@ GLADIATOR_HANG_ATTR(io_enable, S_IRUGO|S_IWUSR,
 static ssize_t show_m1_enable(struct kobject *kobj,
 			struct attribute *attr, char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_show(kobj, attr, buf, hang_dev->M1_offset);
+	return generic_enable_show(kobj, attr, buf, M1_OFFSET);
 }
 
 static size_t store_m1_enable(struct kobject *kobj,
 			struct attribute *attr, const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_store(kobj, attr, buf, count,
-					hang_dev->M1_offset);
+	return generic_enable_store(kobj, attr, buf, count, M1_OFFSET);
 }
 GLADIATOR_HANG_ATTR(m1_enable, S_IRUGO|S_IWUSR,
 		show_m1_enable, store_m1_enable);
@@ -403,18 +418,13 @@ GLADIATOR_HANG_ATTR(m1_enable, S_IRUGO|S_IWUSR,
 static ssize_t show_m2_enable(struct kobject *kobj,
 			struct attribute *attr, char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_show(kobj, attr, buf, hang_dev->M2_offset);
+	return generic_enable_show(kobj, attr, buf, M2_OFFSET);
 }
 
 static size_t store_m2_enable(struct kobject *kobj,
 			struct attribute *attr, const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_store(kobj, attr, buf, count,
-					hang_dev->M2_offset);
+	return generic_enable_store(kobj, attr, buf, count, M2_OFFSET);
 }
 GLADIATOR_HANG_ATTR(m2_enable, S_IRUGO|S_IWUSR,
 		show_m2_enable, store_m2_enable);
@@ -422,18 +432,13 @@ GLADIATOR_HANG_ATTR(m2_enable, S_IRUGO|S_IWUSR,
 static ssize_t show_pcio_enable(struct kobject *kobj,
 			struct attribute *attr, char *buf)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_show(kobj, attr, buf, hang_dev->PCIO_offset);
+	return generic_enable_show(kobj, attr, buf, PCIO_OFFSET);
 }
 
 static size_t store_pcio_enable(struct kobject *kobj,
 			struct attribute *attr, const char *buf, size_t count)
 {
-	struct hang_detect *hang_dev = to_gladiator_hang_dev(kobj);
-
-	return generic_enable_store(kobj, attr, buf, count,
-					hang_dev->PCIO_offset);
+	return generic_enable_store(kobj, attr, buf, count, PCIO_OFFSET);
 }
 GLADIATOR_HANG_ATTR(pcio_enable, S_IRUGO|S_IWUSR,
 		show_pcio_enable, store_pcio_enable);
@@ -452,21 +457,12 @@ static struct attribute *hang_attrs[] = {
 	NULL
 };
 
-static struct attribute *hang_attrs_v2[] = {
-	&hang_attr_ace_threshold.attr,
-	&hang_attr_io_threshold.attr,
-	&hang_attr_ace_enable.attr,
-	&hang_attr_io_enable.attr,
-	NULL
-};
-
 static struct attribute_group hang_attr_group = {
 	.attrs = hang_attrs,
 };
 
 static const struct of_device_id msm_gladiator_hang_detect_table[] = {
 	{ .compatible = "qcom,gladiator-hang-detect" },
-	{ .compatible = "qcom,gladiator-hang-detect-v2" },
 	{}
 };
 
@@ -475,9 +471,7 @@ static int msm_gladiator_hang_detect_probe(struct platform_device *pdev)
 	struct device_node *node = pdev->dev.of_node;
 	struct hang_detect *hang_det = NULL;
 	int i = 0, ret;
-	u32 NR_GLA_REG = 0;
-	u32 *treg;
-	u32 creg;
+	u32 treg[NR_GLA_REG], creg;
 
 	if (!pdev->dev.of_node)
 		return -ENODEV;
@@ -487,36 +481,6 @@ static int msm_gladiator_hang_detect_probe(struct platform_device *pdev)
 
 	if (!hang_det) {
 		pr_err("Can't allocate hang_detect memory\n");
-		return -ENOMEM;
-	}
-
-	if (of_device_is_compatible(node, "qcom,gladiator-hang-detect")) {
-		hang_det->ACE_offset = 0;
-		hang_det->IO_offset = 2;
-		hang_det->M1_offset = 3;
-		hang_det->M2_offset = 4;
-		hang_det->PCIO_offset = 5;
-		NR_GLA_REG = 6;
-	} else if (of_device_is_compatible(node,
-			"qcom,gladiator-hang-detect-v2")) {
-		hang_det->ACE_offset = 0;
-		hang_det->IO_offset = 1;
-		NR_GLA_REG = 2;
-		hang_attr_group.attrs = hang_attrs_v2;
-	}
-
-	hang_det->threshold = devm_kzalloc(&pdev->dev,
-			sizeof(phys_addr_t)*NR_GLA_REG, GFP_KERNEL);
-
-	if (!hang_det->threshold) {
-		pr_err("Can't allocate hang_detect threshold memory\n");
-		return -ENOMEM;
-	}
-
-	treg = devm_kzalloc(&pdev->dev, sizeof(u32)*NR_GLA_REG, GFP_KERNEL);
-
-	if (!treg) {
-		pr_err("Can't allocate threshold register memory\n");
 		return -ENOMEM;
 	}
 
@@ -550,7 +514,6 @@ static int msm_gladiator_hang_detect_probe(struct platform_device *pdev)
 		pr_err("%s:Error in creation sysfs_create_group\n", __func__);
 		goto out_del_kobj;
 	}
-
 	mutex_init(&hang_det->lock);
 	platform_set_drvdata(pdev, hang_det);
 	return 0;

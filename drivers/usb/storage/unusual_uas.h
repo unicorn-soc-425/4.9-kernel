@@ -1,5 +1,4 @@
-/*
- * Driver for USB Attached SCSI devices - Unusual Devices File
+/* Driver for USB Attached SCSI devices - Unusual Devices File
  *
  *   (c) 2013 Hans de Goede <hdegoede@redhat.com>
  *
@@ -41,16 +40,6 @@
  * and don't forget to CC: the USB development list <linux-usb@vger.kernel.org>
  */
 
-/*
- * Apricorn USB3 dongle sometimes returns "USBSUSBSUSBS" in response to SCSI
- * commands in UAS mode.  Observed with the 1.28 firmware; are there others?
- */
-UNUSUAL_DEV(0x0984, 0x0301, 0x0128, 0x0128,
-		"Apricorn",
-		"",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_IGNORE_UAS),
-
 /* https://bugzilla.kernel.org/show_bug.cgi?id=79511 */
 UNUSUAL_DEV(0x0bc2, 0x2312, 0x0000, 0x9999,
 		"Seagate",
@@ -64,13 +53,6 @@ UNUSUAL_DEV(0x0bc2, 0x3312, 0x0000, 0x9999,
 		"Expansion Desk",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_NO_ATA_1X),
-
-/* Reported-by: David Webb <djw@noc.ac.uk> */
-UNUSUAL_DEV(0x0bc2, 0x331a, 0x0000, 0x9999,
-		"Seagate",
-		"Expansion Desk",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_NO_REPORT_LUNS),
 
 /* Reported-by: Hans de Goede <hdegoede@redhat.com> */
 UNUSUAL_DEV(0x0bc2, 0x3320, 0x0000, 0x9999,
@@ -124,9 +106,9 @@ UNUSUAL_DEV(0x0bc2, 0xab2a, 0x0000, 0x9999,
 /* Reported-by: Benjamin Tissoires <benjamin.tissoires@redhat.com> */
 UNUSUAL_DEV(0x13fd, 0x3940, 0x0000, 0x9999,
 		"Initio Corporation",
-		"INIC-3069",
+		"",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_NO_ATA_1X | US_FL_IGNORE_RESIDUE),
+		US_FL_NO_ATA_1X),
 
 /* Reported-by: Tom Arild Naess <tanaess@gmail.com> */
 UNUSUAL_DEV(0x152d, 0x0539, 0x0000, 0x9999,
@@ -140,7 +122,15 @@ UNUSUAL_DEV(0x152d, 0x0567, 0x0000, 0x9999,
 		"JMicron",
 		"JMS567",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_BROKEN_FUA | US_FL_NO_REPORT_OPCODES),
+		US_FL_NO_REPORT_OPCODES),
+
+/* Most ASM1051 based devices have issues with uas, blacklist them all */
+/* Reported-by: Hans de Goede <hdegoede@redhat.com> */
+UNUSUAL_DEV(0x174c, 0x5106, 0x0000, 0x9999,
+		"ASMedia",
+		"ASM1051",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_IGNORE_UAS),
 
 /* Reported-by: David Kozub <zub@linux.fjfi.cvut.cz> */
 UNUSUAL_DEV(0x152d, 0x0578, 0x0000, 0x9999,
@@ -183,12 +173,3 @@ UNUSUAL_DEV(0x4971, 0x8017, 0x0000, 0x9999,
 		"External HDD",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_NO_REPORT_OPCODES),
-
-/* "G-DRIVE" external HDD hangs on write without these.
- * Patch submitted by Alexander Kappner <agk@godking.net>
- */
-UNUSUAL_DEV(0x4971, 0x8024, 0x0000, 0x9999,
-		"SimpleTech",
-		"External HDD",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_ALWAYS_SYNC),

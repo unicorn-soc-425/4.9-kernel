@@ -26,7 +26,6 @@
 
 void acm_notify(void *dev, u16 state);
 
-
 static wait_queue_head_t modem_wait_q;
 
 static unsigned int read_state;
@@ -55,6 +54,7 @@ static ssize_t modem_read(struct file *file, char __user *buf,
 		return -EAGAIN;
 
 	ret = wait_event_interruptible(modem_wait_q, read_state);
+
 	if (ret)
 		return ret;
 
@@ -69,7 +69,6 @@ static ssize_t modem_read(struct file *file, char __user *buf,
 static unsigned int modem_poll(struct file *file, poll_table *wait)
 {
 	int ret;
-
 	poll_wait(file, &modem_wait_q, wait);
 
 	ret = (read_state ? (POLLIN | POLLRDNORM) : 0);
@@ -87,16 +86,12 @@ void notify_control_line_state(u32 value)
 }
 EXPORT_SYMBOL(notify_control_line_state);
 
-
 #define GS_CDC_NOTIFY_SERIAL_STATE	_IOW('S', 1, int)
 #define GS_IOC_NOTIFY_DTR_TEST		_IOW('S', 3, int)
 
 static long
 modem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-
-	pr_info("%s: cmd=0x%x, arg=%lu\n", __func__, cmd, arg);
-
 	/* handle ioctls */
 	switch (cmd) {
 	case GS_CDC_NOTIFY_SERIAL_STATE:
@@ -105,13 +100,14 @@ modem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case GS_IOC_NOTIFY_DTR_TEST:
 		{
-			pr_info("DUN : DTR %d\n", (int)arg);
+			printk(KERN_ALERT"DUN : DTR %d\n", (int)arg);
 			notify_control_line_state((int)arg);
 			break;
 		}
 
 	default:
-		pr_info("%s: Unknown ioctl cmd(0x%x).\n", __func__, cmd);
+		printk(KERN_INFO "modem_ioctl: Unknown ioctl cmd(0x%x).\n",
+				cmd);
 		return -ENOIOCTLCMD;
 	}
 	return 0;
@@ -129,7 +125,7 @@ static const struct file_operations modem_fops = {
 };
 
 static struct miscdevice modem_device = {
-	.minor = 123,
+	.minor	= 123,
 	.name	= "dun",
 	.fops	= &modem_fops,
 };
@@ -137,13 +133,13 @@ static struct miscdevice modem_device = {
 int modem_register(void *data)
 {
 	if (data == NULL) {
-		pr_info("DUN register failed. data is null.\n");
+		printk(KERN_INFO "DUN register failed. data is null.\n");
 		return -1;
 	}
 
 	acm_data = data;
 
-	pr_info("DUN is registered\n");
+	printk(KERN_INFO "DUN is registerd\n");
 
 	return 0;
 }
@@ -152,24 +148,25 @@ EXPORT_SYMBOL(modem_register);
 int modem_misc_register(void)
 {
 	int ret;
-
 	ret = misc_register(&modem_device);
+
 	if (ret) {
-		pr_err("DUN register is failed, ret = %d\n", ret);
+		printk(KERN_ERR "DUN register is failed, ret = %d\n", ret);
 		return ret;
 	}
 
 	init_waitqueue_head(&modem_wait_q);
 	return ret;
 }
-EXPORT_SYMBOL(modem_misc_register);
 
 void modem_unregister(void)
 {
 	acm_data = NULL;
 
 	read_state = 1;
+
 	wake_up_interruptible(&modem_wait_q);
-	pr_info("DUN is unregisterd\n");
+
+	printk(KERN_INFO "DUN is unregisterd\n");
 }
 EXPORT_SYMBOL(modem_unregister);

@@ -17,7 +17,12 @@
 #include <linux/ktime.h>
 #include <linux/slab.h>
 
-#define ST_ASM330LHH_REVISION		"2.0.1"
+/*
+ * Module version:
+ * Version: Major.Minor
+ * Commit: last commit in branch
+ */
+#define ST_ASM330LHH_REVISION		"1.0.1"
 #define ST_ASM330LHH_PATCH		"1"
 
 #define ST_ASM330LHH_VERSION		"v"	\
@@ -44,9 +49,9 @@
 #define ST_ASM330LHH_MAX_ODR			416
 
 /* Define Custom events for FIFO flush */
-#define CUSTOM_IIO_EV_DIR_FIFO_EMPTY (IIO_EV_DIR_NONE + 1)
-#define CUSTOM_IIO_EV_DIR_FIFO_DATA (IIO_EV_DIR_NONE + 2)
-#define CUSTOM_IIO_EV_TYPE_FIFO_FLUSH (IIO_EV_TYPE_CHANGE + 1)
+#define CUSTOM_IIO_EV_DIR_FIFO_EMPTY (IIO_EV_DIR_FALLING + 1)
+#define CUSTOM_IIO_EV_DIR_FIFO_DATA (IIO_EV_DIR_FALLING + 2)
+#define CUSTOM_IIO_EV_TYPE_FIFO_FLUSH (IIO_EV_TYPE_MAG_ADAPTIVE + 1)
 
 #define ST_ASM330LHH_CHANNEL(chan_type, addr, mod, ch2, scan_idx,	\
 			   rb, sb, sg)					\
@@ -240,9 +245,11 @@ extern const struct dev_pm_ops st_asm330lhh_pm_ops;
 
 int st_asm330lhh_probe(struct device *dev, int irq,
 		       const struct st_asm330lhh_transfer_function *tf_ops);
+int st_asm330lhh_remove(struct device *dev);
 int st_asm330lhh_sensor_set_enable(struct st_asm330lhh_sensor *sensor,
 				   bool enable);
 int st_asm330lhh_fifo_setup(struct st_asm330lhh_hw *hw);
+int st_asm330lhh_deallocate_fifo(struct st_asm330lhh_hw *hw);
 int st_asm330lhh_write_with_mask(struct st_asm330lhh_hw *hw, u8 addr, u8 mask,
 				 u8 val);
 int st_asm330lhh_get_odr_val(enum st_asm330lhh_sensor_id id, u16 odr, u8 *val);

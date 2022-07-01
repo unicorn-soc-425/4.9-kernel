@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,7 +17,6 @@
 #include <linux/rbtree.h>
 #include <linux/mutex.h>
 #include <linux/err.h>
-#include <asm/barrier.h>
 
 #include <linux/msm_dma_iommu_mapping.h>
 
@@ -27,11 +26,9 @@
  * @dev - Device this is mapped to. Used as key
  * @sgl - The scatterlist for this mapping
  * @nents - Number of entries in sgl
- * @dir - The direction for the map.
+ * @dir - The direction for the unmap.
  * @meta - Backpointer to the meta this guy belongs to.
  * @ref - for reference counting this mapping
- * @map_attrs - dma mapping attributes
- * @buf_start_addr - address of start of buffer
  *
  * Represents a mapping of one dma_buf buffer to a particular device
  * and address range. There may exist other mappings of this buffer in
@@ -46,8 +43,6 @@ struct msm_iommu_map {
 	enum dma_data_direction dir;
 	struct msm_iommu_meta *meta;
 	struct kref ref;
-	unsigned long map_attrs;
-	dma_addr_t buf_start_addr;
 };
 
 struct msm_iommu_meta {
@@ -72,13 +67,15 @@ static void msm_iommu_meta_add(struct msm_iommu_meta *meta)
 		parent = *p;
 		entry = rb_entry(parent, struct msm_iommu_meta, node);
 
-		if (meta->buffer < entry->buffer)
+		if (meta->buffer < entry->buffer) {
 			p = &(*p)->rb_left;
-		else if (meta->buffer > entry->buffer)
+		} else if (meta->buffer > entry->buffer) {
 			p = &(*p)->rb_right;
-		else
+		} else {
 			pr_err("%s: dma_buf %p already exists\n", __func__,
-			       entry->buffer);
+				entry->buffer);
+			BUG();
+		}
 	}
 
 	rb_link_node(&meta->node, parent, p);
@@ -110,6 +107,15 @@ static struct msm_iommu_meta *msm_iommu_meta_lookup(void *buffer)
 static void msm_iommu_add(struct msm_iommu_meta *meta,
 			  struct msm_iommu_map *iommu)
 {
+	struct msm_iommu_map *entry;
+
+	list_for_each_entry(entry, &meta->iommu_maps, lnode) {
+		if (entry->dev == iommu->dev) {
+			pr_err("%s: dma_buf %p already has mapping to device %p\n",
+				__func__, meta->buffer, iommu->dev);
+			BUG();
+		}
+	}
 	INIT_LIST_HEAD(&iommu->lnode);
 	list_add(&iommu->lnode, &meta->iommu_maps);
 }
@@ -151,13 +157,13 @@ static void msm_iommu_meta_put(struct msm_iommu_meta *meta);
 static inline int __msm_dma_map_sg(struct device *dev, struct scatterlist *sg,
 				   int nents, enum dma_data_direction dir,
 				   struct dma_buf *dma_buf,
-				   unsigned long attrs)
+				   struct dma_attrs *attrs)
 {
 	struct msm_iommu_map *iommu_map;
 	struct msm_iommu_meta *iommu_meta = NULL;
 	int ret = 0;
 	bool extra_meta_ref_taken = false;
-	int late_unmap = !(attrs & DMA_ATTR_NO_DELAYED_UNMAP);
+	int late_unmap = !dma_get_attr(DMA_ATTR_NO_DELAYED_UNMAP, attrs);
 
 	mutex_lock(&msm_iommu_map_mutex);
 	iommu_meta = msm_iommu_meta_lookup(dma_buf->priv);
@@ -183,7 +189,7 @@ static inline int __msm_dma_map_sg(struct device *dev, struct scatterlist *sg,
 	mutex_lock(&iommu_meta->lock);
 	iommu_map = msm_iommu_lookup(iommu_meta, dev);
 	if (!iommu_map) {
-		iommu_map = kmalloc(sizeof(*iommu_map), GFP_KERNEL);
+		iommu_map = kmalloc(sizeof(*iommu_map), GFP_ATOMIC);
 
 		if (!iommu_map) {
 			ret = -ENOMEM;
@@ -203,43 +209,18 @@ static inline int __msm_dma_map_sg(struct device *dev, struct scatterlist *sg,
 		iommu_map->sgl.dma_address = sg->dma_address;
 		iommu_map->sgl.dma_length = sg->dma_length;
 		iommu_map->dev = dev;
-		iommu_map->dir = dir;
-		iommu_map->nents = nents;
-		iommu_map->map_attrs = attrs;
-		iommu_map->buf_start_addr = sg_phys(sg);
 		msm_iommu_add(iommu_meta, iommu_map);
 
 	} else {
-		if (nents == iommu_map->nents &&
-		    dir == iommu_map->dir &&
-		    attrs == iommu_map->map_attrs &&
-		    sg_phys(sg) == iommu_map->buf_start_addr) {
-			sg->dma_address = iommu_map->sgl.dma_address;
-			sg->dma_length = iommu_map->sgl.dma_length;
+		sg->dma_address = iommu_map->sgl.dma_address;
+		sg->dma_length = iommu_map->sgl.dma_length;
 
-			kref_get(&iommu_map->ref);
-			if (is_device_dma_coherent(dev))
-				/*
-				 * Ensure all outstanding changes for coherent
-				 * buffers are applied to the cache before any
-				 * DMA occurs.
-				 */
-				dmb(ish);
-			ret = nents;
-		} else {
-			bool start_diff = (sg_phys(sg) !=
-					   iommu_map->buf_start_addr);
-
-			dev_err(dev, "lazy map request differs:\n"
-				"req dir:%d, original dir:%d\n"
-				"req nents:%d, original nents:%d\n"
-				"req map attrs:%lu, original map attrs:%lu\n"
-				"req buffer start address differs:%d\n",
-				dir, iommu_map->dir, nents,
-				iommu_map->nents, attrs, iommu_map->map_attrs,
-				start_diff);
-			ret = -EINVAL;
-		}
+		kref_get(&iommu_map->ref);
+		/*
+		 * Need to do cache operations here based on "dir" in the
+		 * future if we go with coherent mappings.
+		 */
+		ret = nents;
 	}
 	mutex_unlock(&iommu_meta->lock);
 	return ret;
@@ -263,7 +244,7 @@ out:
  */
 int msm_dma_map_sg_attrs(struct device *dev, struct scatterlist *sg, int nents,
 		   enum dma_data_direction dir, struct dma_buf *dma_buf,
-		   unsigned long attrs)
+		   struct dma_attrs *attrs)
 {
 	int ret;
 
@@ -286,7 +267,6 @@ int msm_dma_map_sg_attrs(struct device *dev, struct scatterlist *sg, int nents,
 
 	return ret;
 }
-EXPORT_SYMBOL(msm_dma_map_sg_attrs);
 
 static void msm_iommu_meta_destroy(struct kref *kref)
 {
@@ -294,8 +274,8 @@ static void msm_iommu_meta_destroy(struct kref *kref)
 						ref);
 
 	if (!list_empty(&meta->iommu_maps)) {
-		WARN(1, "%s: DMA Buffer %p being destroyed with outstanding iommu mappins!\n",
-		     __func__, meta->buffer);
+		WARN(1, "%s: DMA Buffer %p being destroyed with outstanding iommu mappins!\n", __func__,
+			meta->buffer);
 	}
 	rb_erase(&meta->node, &iommu_root);
 	kfree(meta);
@@ -347,9 +327,13 @@ void msm_dma_unmap_sg(struct device *dev, struct scatterlist *sgl, int nents,
 		goto out;
 	}
 
-	if (dir != iommu_map->dir)
-		WARN(1, "%s: (%pK) dir:%d differs from original dir:%d\n",
-		     __func__, dma_buf, dir, iommu_map->dir);
+	/*
+	 * Save direction for later use when we actually unmap.
+	 * Not used right now but in the future if we go to coherent mapping
+	 * API we might want to call the appropriate API when client asks
+	 * to unmap
+	 */
+	iommu_map->dir = dir;
 
 	kref_put(&iommu_map->ref, msm_iommu_map_release);
 	mutex_unlock(&meta->lock);
@@ -358,38 +342,6 @@ void msm_dma_unmap_sg(struct device *dev, struct scatterlist *sgl, int nents,
 
 out:
 	return;
-}
-EXPORT_SYMBOL(msm_dma_unmap_sg);
-
-int msm_dma_unmap_all_for_dev(struct device *dev)
-{
-	int ret = 0;
-	struct msm_iommu_meta *meta;
-	struct rb_root *root;
-	struct rb_node *meta_node;
-
-	mutex_lock(&msm_iommu_map_mutex);
-	root = &iommu_root;
-	meta_node = rb_first(root);
-	while (meta_node) {
-		struct msm_iommu_map *iommu_map;
-		struct msm_iommu_map *iommu_map_next;
-
-		meta = rb_entry(meta_node, struct msm_iommu_meta, node);
-		mutex_lock(&meta->lock);
-		list_for_each_entry_safe(iommu_map, iommu_map_next,
-						&meta->iommu_maps, lnode)
-			if (iommu_map->dev == dev)
-				if (!kref_put(&iommu_map->ref,
-						msm_iommu_map_release))
-					ret = -EINVAL;
-
-		mutex_unlock(&meta->lock);
-		meta_node = rb_next(meta_node);
-	}
-	mutex_unlock(&msm_iommu_map_mutex);
-
-	return ret;
 }
 
 /*
@@ -406,7 +358,8 @@ void msm_dma_buf_freed(void *buffer)
 	if (!meta) {
 		/* Already unmapped (assuming no late unmapping) */
 		mutex_unlock(&msm_iommu_map_mutex);
-		return;
+		goto out;
+
 	}
 	mutex_unlock(&msm_iommu_map_mutex);
 
@@ -417,12 +370,16 @@ void msm_dma_buf_freed(void *buffer)
 		kref_put(&iommu_map->ref, msm_iommu_map_release);
 
 	if (!list_empty(&meta->iommu_maps)) {
-		WARN(1, "%s: DMA buffer %p destroyed with outstanding iommu mappings\n",
-		     __func__, meta->buffer);
+		WARN(1, "%s: DMA Buffer %p being destroyed with outstanding iommu mappins!\n", __func__,
+			meta->buffer);
 	}
 
 	INIT_LIST_HEAD(&meta->iommu_maps);
 	mutex_unlock(&meta->lock);
 
 	msm_iommu_meta_put(meta);
+out:
+	return;
+
 }
+

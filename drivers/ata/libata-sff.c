@@ -1279,8 +1279,7 @@ fsm_start:
 		break;
 	default:
 		poll_next = 0;
-		WARN(true, "ata%d: SFF host state machine in invalid state %d",
-		     ap->print_id, ap->hsm_task_state);
+		BUG();
 	}
 
 	return poll_next;
@@ -3210,11 +3209,11 @@ void ata_pci_bmdma_init(struct ata_host *host)
 	 * ->sff_irq_clear method.  Try to initialize bmdma_addr
 	 * regardless of dma masks.
 	 */
-	rc = dma_set_mask(&pdev->dev, ATA_DMA_MASK);
+	rc = pci_set_dma_mask(pdev, ATA_DMA_MASK);
 	if (rc)
 		ata_bmdma_nodma(host, "failed to set dma mask");
 	if (!rc) {
-		rc = dma_set_coherent_mask(&pdev->dev, ATA_DMA_MASK);
+		rc = pci_set_consistent_dma_mask(pdev, ATA_DMA_MASK);
 		if (rc)
 			ata_bmdma_nodma(host,
 					"failed to set consistent dma mask");

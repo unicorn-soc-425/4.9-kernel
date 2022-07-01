@@ -564,7 +564,7 @@ static ssize_t read_gyro_boot_sample_store(struct device *dev,
 	if (err)
 		return err;
 	if (enable > 1) {
-		dev_err(sensor->hw->dev,
+		err = dev_err(sensor->hw->dev,
 				"Invalid value of input, input=%ld\n", enable);
 		return -EINVAL;
 	}
@@ -599,7 +599,7 @@ static ssize_t read_acc_boot_sample_store(struct device *dev,
 	if (err)
 		return err;
 	if (enable > 1) {
-		dev_err(sensor->hw->dev,
+		err = dev_err(sensor->hw->dev,
 				"Invalid value of input, input=%ld\n", enable);
 		return -EINVAL;
 	}
@@ -705,7 +705,7 @@ static int st_asm330lhh_of_get_drdy_pin(struct st_asm330lhh_hw *hw, int *drdy_pi
 	if (!np)
 		return -EINVAL;
 
-	return of_property_read_u32(np, "st,drdy-int-pin", drdy_pin);
+	return of_property_read_u32_array(np, "st,drdy-int-pin", drdy_pin, 1);
 }
 
 static int st_asm330lhh_get_drdy_reg(struct st_asm330lhh_hw *hw, u8 *drdy_reg)
@@ -1013,6 +1013,28 @@ clean_exit1:
 
 	return 0;
 }
+static void asm330_acc_gyro_input_cleanup(
+		struct st_asm330lhh_hw *hw)
+{
+	int i = 0;
+	struct st_asm330lhh_sensor *acc;
+	struct st_asm330lhh_sensor *gyro;
+
+	acc = iio_priv(hw->iio_devs[ST_ASM330LHH_ID_ACC]);
+	gyro = iio_priv(hw->iio_devs[ST_ASM330LHH_ID_GYRO]);
+
+	input_free_device(acc->buf_dev);
+	input_unregister_device(gyro->buf_dev);
+	input_free_device(gyro->buf_dev);
+	for (i = 0; i < ASM_MAXSAMPLE; i++)
+		kmem_cache_free(gyro->asm_cachepool,
+				gyro->asm_samplist[i]);
+	kmem_cache_destroy(gyro->asm_cachepool);
+	for (i = 0; i < ASM_MAXSAMPLE; i++)
+		kmem_cache_free(acc->asm_cachepool,
+				acc->asm_samplist[i]);
+	kmem_cache_destroy(acc->asm_cachepool);
+}
 #else
 static void st_asm330lhh_enable_acc_gyro(struct st_asm330lhh_hw *hw)
 {
@@ -1020,6 +1042,9 @@ static void st_asm330lhh_enable_acc_gyro(struct st_asm330lhh_hw *hw)
 static int asm330_acc_gyro_early_buff_init(struct st_asm330lhh_hw *hw)
 {
 	return 1;
+}
+static void asm330_acc_gyro_input_cleanup(struct st_asm330lhh_hw *hw)
+{
 }
 #endif
 
@@ -1069,8 +1094,11 @@ int st_asm330lhh_probe(struct device *dev, int irq,
 			continue;
 
 		err = devm_iio_device_register(hw->dev, hw->iio_devs[i]);
-		if (err)
+		if (err) {
+			if (hw->irq > 0)
+				st_asm330lhh_deallocate_fifo(hw);
 			return err;
+		}
 	}
 
 	err = asm330_acc_gyro_early_buff_init(hw);
@@ -1085,6 +1113,16 @@ int st_asm330lhh_probe(struct device *dev, int irq,
 }
 
 EXPORT_SYMBOL(st_asm330lhh_probe);
+
+int st_asm330lhh_remove(struct device *dev)
+{
+	struct st_asm330lhh_hw *hw = dev_get_drvdata(dev);
+
+	asm330_acc_gyro_input_cleanup(hw);
+
+	return st_asm330lhh_deallocate_fifo(hw);
+}
+EXPORT_SYMBOL(st_asm330lhh_remove);
 
 static int __maybe_unused st_asm330lhh_suspend(struct device *dev)
 {
@@ -1123,6 +1161,7 @@ static int __maybe_unused st_asm330lhh_resume(struct device *dev)
 			continue;
 
 		sensor = iio_priv(hw->iio_devs[i]);
+
 		if (!(hw->enable_mask & BIT(sensor->id)))
 			continue;
 

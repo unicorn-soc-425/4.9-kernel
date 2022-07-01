@@ -4,9 +4,9 @@
  * Copyright (C) 2015-2017 Samsung, Inc.
  * Author: Dongrak Shin <dongrak.shin@samsung.com>
  *
- */
+*/
 
- /* usb notify layer v3.1 */
+ /* usb notify layer v3.0 */
 
 #define pr_fmt(fmt) "usb_notify: " fmt
 
@@ -18,97 +18,139 @@
 #include <linux/fs.h>
 #include <linux/err.h>
 #include <linux/usb.h>
-#include <linux/string.h>
 #include <linux/usb_notify.h>
-#include <linux/configfs.h>
-#include <linux/usb/composite.h>
-#include <linux/usb/gadget.h>
-#include "usb_gadget_info.h"
+#include <linux/string.h>
+#include "usb_notify_sysfs.h"
 
-#define MAJOR_DEV 0
-#define MINOR_DEV 1
+#if defined(CONFIG_USB_HW_PARAM)
+const char
+usb_hw_param_print[USB_CCIC_HW_PARAM_MAX][MAX_HWPARAM_STRING] = {
+	{"CC_WATER"},
+	{"CC_DRY"},
+	{"CC_I2C"},
+	{"CC_OVC"},
+	{"CC_OTG"},
+	{"CC_DP"},
+	{"CC_VR"},
+	{"H_SUPER"},
+	{"H_HIGH"},
+	{"H_FULL"},
+	{"H_LOW"},
+	{"C_SUPER"},
+	{"C_HIGH"},
+	{"H_AUDIO"},
+	{"H_COMM"},
+	{"H_HID"},
+	{"H_PHYSIC"},
+	{"H_IMAGE"},
+	{"H_PRINTER"},
+	{"H_STORAGE"},
+	{"H_HUB"},
+	{"H_CDC"},
+	{"H_CSCID"},
+	{"H_CONTENT"},
+	{"H_VIDEO"},
+	{"H_WIRE"},
+	{"H_MISC"},
+	{"H_APP"},
+	{"H_VENDOR"},
+	{"CC_DEX"},
+	{"CC_WTIME"},
+	{"CC_WVBUS"},
+	{"CC_WVTIME"},
+	{"CC_CSHORT"},
+	{"M_AFCERR"},
+	{"M_DCDTMO"},
+	{"CC_VER"},
+};
+#endif
 
+struct notify_data {
+	struct class *usb_notify_class;
+	atomic_t device_count;
+};
 
-RAW_NOTIFIER_HEAD(usb_otg_notifier);
-EXPORT_SYMBOL_GPL(usb_otg_notifier);
+static struct notify_data usb_notify_data;
 
-static int check_cmd_type(char *cur_cmd, char *pre_cmd)
+static int is_valid_cmd(char *cur_cmd, char *prev_cmd)
 {
-	int notify_t = 0;
+	pr_info("%s : current state=%s, previous state=%s\n",
+		__func__, cur_cmd, prev_cmd);
 
-	pr_info("%s : current cmd=%s, previous cmd=%s\n",__func__, cur_cmd, pre_cmd);
-
-	if (!strcmp(cur_cmd, "ON_ALL_SIM")) {
-		notify_t = NOTIFY_BLOCK_ALL;
-	} else if (!strcmp(cur_cmd, "ON_HOST_UPSM")) {
-		notify_t = NOTIFY_BLOCK_HOST;
-	} else if (!strcmp(cur_cmd, "ON_HOST_MDM")) {
-		notify_t = NOTIFY_BLOCK_HOST;
-	} else if (!strcmp(cur_cmd, "OFF")) {
-		notify_t = NOTIFY_OFF;
-	} else {
-		notify_t = NOTIFY_INVALID;
-	}
-
-	if(!strcmp(cur_cmd, pre_cmd))
-		notify_t = NOTIFY_INVALID;
-
-	return notify_t;
-}
-
-ssize_t usb_notify_gadget_disable(struct gadget_info *gi)
-{
-	int ret = 0;
-
-	mutex_lock(&gi->lock);
-
-	if (!gi->composite.gadget_driver.udc_name) {
-		ret = -ENODEV;
-		goto err;
-	}
-
-	gi->unbinding = true;
-	ret = usb_gadget_unregister_driver(&gi->composite.gadget_driver);
-	if (ret)
-		goto err;
-
-	gi->unbinding = false;
-	kfree(gi->composite.gadget_driver.udc_name);
-	gi->composite.gadget_driver.udc_name = NULL;
-
-	mutex_unlock(&gi->lock);
-	return 0;
-
-err:
-	mutex_unlock(&gi->lock);
-	return ret;
-}
-
-ssize_t usb_notify_gadget_enable(struct gadget_info *gi, char *name)
-{
-	int ret = 0;
-
-	mutex_lock(&gi->lock);
-
-	if (gi->composite.gadget_driver.udc_name) {
-			ret = -EBUSY;
-			goto err;
+	if (!strcmp(cur_cmd, "ON") ||
+			!strncmp(cur_cmd, "ON_ALL_", 7)) {
+		if (!strcmp(prev_cmd, "ON") ||
+				!strncmp(prev_cmd, "ON_ALL_", 7)) {
+			goto ignore;
+		} else if (!strncmp(prev_cmd, "ON_HOST_", 8)) {
+			goto all;
+		} else if (!strncmp(prev_cmd, "ON_CLIENT_", 10)) {
+			goto all;
+		} else if (!strcmp(prev_cmd, "OFF")) {
+			goto all;
+		} else {
+			goto invalid;
 		}
-
-	gi->composite.gadget_driver.udc_name = name;
-	ret = usb_gadget_probe_driver(&gi->composite.gadget_driver);
-	if (ret) {
-		gi->composite.gadget_driver.udc_name = NULL;
-		goto err;
+	} else if (!strcmp(cur_cmd, "OFF")) {
+		if (!strcmp(prev_cmd, "ON") ||
+				!strncmp(prev_cmd, "ON_ALL_", 7)) {
+			goto off;
+		} else if (!strncmp(prev_cmd, "ON_HOST_", 8)) {
+			goto off;
+		} else if (!strncmp(prev_cmd, "ON_CLIENT_", 10)) {
+			goto off;
+		} else if (!strcmp(prev_cmd, "OFF")) {
+			goto ignore;
+		} else {
+			goto invalid;
+		}
+	} else if (!strncmp(cur_cmd, "ON_HOST_", 8)) {
+		if (!strcmp(prev_cmd, "ON") ||
+				!strncmp(prev_cmd, "ON_ALL_", 7)) {
+			goto host;
+		} else if (!strncmp(prev_cmd, "ON_HOST_", 8)) {
+			goto ignore;
+		} else if (!strncmp(prev_cmd, "ON_CLIENT_", 10)) {
+			goto host;
+		} else if (!strcmp(prev_cmd, "OFF")) {
+			goto host;
+		} else {
+			goto invalid;
+		}
+	} else if (!strncmp(cur_cmd, "ON_CLIENT_", 10)) {
+		if (!strcmp(prev_cmd, "ON") ||
+				!strncmp(prev_cmd, "ON_ALL_", 7)) {
+			goto client;
+		} else if (!strncmp(prev_cmd, "ON_HOST_", 8)) {
+			goto client;
+		} else if (!strncmp(prev_cmd, "ON_CLIENT_", 10)) {
+			goto ignore;
+		} else if (!strcmp(prev_cmd, "OFF")) {
+			goto client;
+		} else {
+			goto invalid;
+		}
+	} else {
+		goto invalid;
 	}
-
-	mutex_unlock(&gi->lock);
-	return 0;
-
-err:
-	kfree(name);
-	mutex_unlock(&gi->lock);
-	return ret;
+host:
+	pr_info("%s cmd=%s is accepted.\n", __func__, cur_cmd);
+	return NOTIFY_BLOCK_TYPE_HOST;
+client:
+	pr_info("%s cmd=%s is accepted.\n", __func__, cur_cmd);
+	return NOTIFY_BLOCK_TYPE_CLIENT;
+all:
+	pr_info("%s cmd=%s is accepted.\n", __func__, cur_cmd);
+	return NOTIFY_BLOCK_TYPE_ALL;
+off:
+	pr_info("%s cmd=%s is accepted.\n", __func__, cur_cmd);
+	return NOTIFY_BLOCK_TYPE_NONE;
+ignore:
+	pr_err("%s cmd=%s is ignored but saved.\n", __func__, cur_cmd);
+	return -EEXIST;
+invalid:
+	pr_err("%s cmd=%s is invalid.\n", __func__, cur_cmd);
+	return -EINVAL;
 }
 
 static ssize_t disable_show(
@@ -118,22 +160,22 @@ static ssize_t disable_show(
 	struct usb_notify_dev *udev = (struct usb_notify_dev *)
 		dev_get_drvdata(dev);
 
-	pr_info("read cmd_state %s\n", udev->state_cmd);
-	return sprintf(buf, "%s\n", udev->state_cmd);
+	pr_info("read disable_state %s\n", udev->disable_state_cmd);
+	return sprintf(buf, "%s\n", udev->disable_state_cmd);
 }
 
 static ssize_t disable_store(
 		struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t size)
 {
-	struct usb_notify_dev *udev = (struct usb_notify_dev *)dev_get_drvdata(dev);
-	struct usb_notify* u_notify = container_of(udev, struct usb_notify, notify_dev);
+	struct usb_notify_dev *udev = (struct usb_notify_dev *)
+		dev_get_drvdata(dev);
 
 	char *disable;
-	int ret = 0;
-	int notify_type = 0;
+	int sret, param = -EINVAL;
+	size_t ret = -ENOMEM;
 
-	if (size > CMD_STATE_LEN) {
+	if (size > MAX_DISABLE_STR_LEN) {
 		pr_err("%s size(%zu) is too long.\n", __func__, size);
 		goto error;
 	}
@@ -142,178 +184,307 @@ static ssize_t disable_store(
 	if (!disable)
 		goto error;
 
-	u_notify->udc_name = kzalloc(UDC_CMD_LEN, GFP_KERNEL);
-	if (!u_notify->udc_name)
-		goto error;
-
-	ret = sscanf(buf, "%s", disable);
-	if (ret != 1)
+	sret = sscanf(buf, "%s", disable);
+	if (sret != 1)
 		goto error1;
 
-	notify_type = check_cmd_type(disable, udev->state_cmd);
-
-	if(!notify_type)
-		goto error1;
-
-	strncpy(udev->state_cmd,disable, sizeof(udev->state_cmd)-1);
-
-	switch (notify_type) {
-
-		case NOTIFY_BLOCK_ALL:
-			u_notify->usb_host_flag = 1;
-			u_notify->usb_device_flag = 1;
-
-			ret = usb_notify_gadget_disable(u_notify->usb_gi);
-			if(ret)
-				pr_err("usb_notify_gadget_disable fail!\n");
-			kfree(u_notify->udc_name);
-			break;
-
-		case NOTIFY_BLOCK_HOST:
-			u_notify->usb_host_flag = 1;
-			u_notify->usb_device_flag = 0;
-			break;
-
-		case NOTIFY_OFF:
-			u_notify->usb_host_flag = 0;
-			u_notify->usb_device_flag = 0;
-
-			strcpy(u_notify->udc_name,u_notify->gi_name);
-			ret = usb_notify_gadget_enable(u_notify->usb_gi,u_notify->udc_name);
-			if(ret)
-				pr_err("usb_notify_gadget_enable fail!\n");
-			break;
-
-		default:
-			goto error1;
-	}
-
-	raw_notifier_call_chain(&usb_otg_notifier,0,u_notify);
-
-	return size;
-
+	if (udev->set_disable) {
+		param = is_valid_cmd(disable, udev->disable_state_cmd);
+		if (param == -EINVAL) {
+			ret = param;
+		} else {
+			if (param != -EEXIST)
+				udev->set_disable(udev, param);
+			strncpy(udev->disable_state_cmd,
+				disable, sizeof(udev->disable_state_cmd)-1);
+			ret = size;
+		}
+	} else
+		pr_err("set_disable func is NULL\n");
 error1:
 	kfree(disable);
 error:
 	return ret;
 }
 
-int get_class_index(int ch9_class_num)
+static ssize_t support_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
 {
-	int internal_class_index;
+	struct usb_notify_dev *udev = (struct usb_notify_dev *)
+		dev_get_drvdata(dev);
+	struct otg_notify *n = udev->o_notify;
+	char *support;
 
-	switch (ch9_class_num) {
-	case USB_CLASS_PER_INTERFACE:
-		internal_class_index = 1;
+	if (n->unsupport_host || !IS_ENABLED(CONFIG_USB_HOST_NOTIFY))
+		support = "CLIENT";
+	else
+		support = "ALL";
+
+	pr_info("read support %s\n", support);
+	return snprintf(buf,  sizeof(support)+1, "%s\n", support);
+}
+
+static ssize_t otg_speed_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct usb_notify_dev *udev = (struct usb_notify_dev *)
+		dev_get_drvdata(dev);
+	struct otg_notify *n = udev->o_notify;
+	char *speed;
+
+	switch (n->speed) {
+	case USB_SPEED_SUPER:
+		speed = "SUPER";
 		break;
-	case USB_CLASS_AUDIO:
-		internal_class_index = 2;
+	case USB_SPEED_HIGH:
+		speed = "HIGH";
 		break;
-	case USB_CLASS_COMM:
-		internal_class_index = 3;
+	case USB_SPEED_FULL:
+		speed = "FULL";
 		break;
-	case USB_CLASS_HID:
-		internal_class_index = 4;
-		break;
-	case USB_CLASS_PHYSICAL:
-		internal_class_index = 5;
-		break;
-	case USB_CLASS_STILL_IMAGE:
-		internal_class_index = 6;
-		break;
-	case USB_CLASS_PRINTER:
-		internal_class_index = 7;
-		break;
-	case USB_CLASS_MASS_STORAGE:
-		internal_class_index = 8;
-		break;
-	case USB_CLASS_HUB:
-		internal_class_index = 9;
-		break;
-	case USB_CLASS_CDC_DATA:
-		internal_class_index = 10;
-		break;
-	case USB_CLASS_CSCID:
-		internal_class_index = 11;
-		break;
-	case USB_CLASS_CONTENT_SEC:
-		internal_class_index = 12;
-		break;
-	case USB_CLASS_VIDEO:
-		internal_class_index = 13;
-		break;
-	case USB_CLASS_WIRELESS_CONTROLLER:
-		internal_class_index = 14;
-		break;
-	case USB_CLASS_MISC:
-		internal_class_index = 15;
-		break;
-	case USB_CLASS_APP_SPEC:
-		internal_class_index = 16;
-		break;
-	case USB_CLASS_VENDOR_SPEC:
-		internal_class_index = 17;
+	case USB_SPEED_LOW:
+		speed = "LOW";
 		break;
 	default:
-		internal_class_index = 0;
+		speed = "UNKNOWN";
 		break;
 	}
-	return internal_class_index;
+	pr_info("%s : read otg speed %s\n", __func__, speed);
+	return snprintf(buf,  sizeof(speed)+1, "%s\n", speed);
 }
 
-static bool usb_match_any_interface_for_mdm(struct usb_device *udev,
-				    int *whitelist_array)
+#if defined(CONFIG_USB_HW_PARAM)
+static unsigned long long strtoull(char *ptr, char **end, int base)
 {
-	unsigned int i;
+	unsigned long long ret = 0;
 
-	for (i = 0; i < udev->descriptor.bNumConfigurations; ++i) {
-		struct usb_host_config *cfg = &udev->config[i];
-		unsigned int j;
+	if (base > 36)
+		goto out;
 
-		for (j = 0; j < cfg->desc.bNumInterfaces; ++j) {
-			struct usb_interface_cache *cache;
-			struct usb_host_interface *intf;
-			int intf_class;
+	while (*ptr) {
+		int digit;
 
-			cache = cfg->intf_cache[j];
-			if (cache->num_altsetting == 0)
-				continue;
+		if (*ptr >= '0' && *ptr <= '9' && *ptr < '0' + base)
+			digit = *ptr - '0';
+		else if (*ptr >= 'A' && *ptr < 'A' + base - 10)
+			digit = *ptr - 'A' + 10;
+		else if (*ptr >= 'a' && *ptr < 'a' + base - 10)
+			digit = *ptr - 'a' + 10;
+		else
+			break;
 
-			intf = &cache->altsetting[0];
-			intf_class = intf->desc.bInterfaceClass;
-			if (!whitelist_array[get_class_index(intf_class)]) {
-				pr_info("%s : FAIL,%x interface, it's not in whitelist\n",
-					__func__, intf_class);
-				return false;
-			}
-			pr_info("%s : SUCCESS,%x interface, it's in whitelist\n",
-				__func__, intf_class);
-		}
+		ret *= base;
+		ret += digit;
+		ptr++;
 	}
-	return true;
+
+out:
+	if (end)
+		*end = (char *)ptr;
+
+	return ret;
 }
 
-int usb_check_whitelist_for_mdm(struct usb_device *dev)
+static ssize_t usb_hw_param_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
 {
-	int *whitelist_array;
-
-	if (u_notify == NULL) {
-		pr_err("u_notify is NULL\n");
-		return 1;
+	struct usb_notify_dev *udev = (struct usb_notify_dev *)
+		dev_get_drvdata(dev);
+	struct otg_notify *n = udev->o_notify;
+	int index, ret = 0;
+	unsigned long long *p_param = NULL;
+#if defined(CONFIG_USB_TYPEC_MANAGER_NOTIFIER)
+	p_param = get_hw_param(n, USB_CCIC_WATER_INT_COUNT);
+	if (p_param)
+		*p_param += get_ccic_water_count();
+	p_param = get_hw_param(n, USB_CCIC_DRY_INT_COUNT);
+	if (p_param)
+		*p_param += get_ccic_dry_count();
+	p_param = get_hw_param(n, USB_CLIENT_SUPER_SPEED_COUNT);
+	if (p_param)
+		*p_param += get_usb310_count();
+	p_param = get_hw_param(n, USB_CLIENT_HIGH_SPEED_COUNT);
+	if (p_param)
+		*p_param += get_usb210_count();
+	p_param = get_hw_param(n, USB_CCIC_WATER_TIME_DURATION);
+	if (p_param)
+		*p_param += get_waterDet_duration();
+	p_param = get_hw_param(n, USB_CCIC_WATER_VBUS_COUNT);
+	if (p_param)
+		*p_param += get_waterChg_count();
+	p_param = get_hw_param(n, USB_CCIC_WATER_VBUS_TIME_DURATION);
+	if (p_param)
+		*p_param += get_wVbus_duration();
+	p_param = get_hw_param(n, USB_CCIC_VERSION);
+	if (p_param)
+		*p_param = show_ccic_version();
+#else
+	 p_param = get_hw_param(n, USB_CLIENT_SUPER_SPEED_COUNT);
+	 if (p_param)
+		 *p_param += microusb_get_usb310_count();
+	 p_param = get_hw_param(n, USB_CLIENT_HIGH_SPEED_COUNT);
+	 if (p_param)
+		 *p_param += microusb_get_usb210_count();
+#endif
+	for (index = 0; index < USB_CCIC_HW_PARAM_MAX - 1; index++) {
+		p_param = get_hw_param(n, index);
+		if (p_param)
+			ret += sprintf(buf + ret, "%llu ", *p_param);
+		else
+			ret += sprintf(buf + ret, "0 ");
 	}
-
-	if (u_notify->sec_whitelist_enable) {
-		whitelist_array = u_notify->notify_dev.whitelist_array_for_mdm;
-		if (usb_match_any_interface_for_mdm(dev, whitelist_array)) {
-			dev_info(&dev->dev, "the device is matched with whitelist!\n");
-			return 1;
-		}
-		return 0;
-	}
-	return 1;
+	p_param = get_hw_param(n, index);
+	if (p_param)
+		ret += sprintf(buf + ret, "%llu\n", *p_param);
+	else
+		ret += sprintf(buf + ret, "0\n");
+	pr_info("%s - ret : %d\n", __func__, ret);
+	return ret;
 }
-EXPORT_SYMBOL_GPL(usb_check_whitelist_for_mdm);
 
+static ssize_t usb_hw_param_store(
+		struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t size)
+{
+	struct usb_notify_dev *udev = (struct usb_notify_dev *)
+		dev_get_drvdata(dev);
+	struct otg_notify *n = udev->o_notify;
+	unsigned long long prev_hw_param[USB_CCIC_HW_PARAM_MAX] = {0, };
+
+	int index = 0;
+	size_t ret = -ENOMEM;
+	char *token, *str = (char *)buf;
+
+	if (size > MAX_HWPARAM_STR_LEN) {
+		pr_err("%s size(%zu) is too long.\n", __func__, size);
+		goto error;
+	}
+	ret = size;
+	if (size < USB_CCIC_HW_PARAM_MAX) {
+		pr_err("%s efs file is not created correctly.\n", __func__);
+		goto error;
+	}
+
+	for (index = 0; index < (USB_CCIC_HW_PARAM_MAX - 1); index++) {
+		token = strsep(&str, " ");
+		if (token)
+			prev_hw_param[index] = strtoull(token, NULL, 10);
+
+		if (!token || (prev_hw_param[index] > HWPARAM_DATA_LIMIT))
+			goto error;
+	}
+
+	for (index = 0; index < (USB_CCIC_HW_PARAM_MAX - 1); index++) {
+		*(get_hw_param(n, index)) += prev_hw_param[index];
+	}
+	pr_info("%s - ret : %zu\n", __func__, ret);
+error:
+	return ret;
+}
+
+static ssize_t hw_param_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct usb_notify_dev *udev = (struct usb_notify_dev *)
+		dev_get_drvdata(dev);
+	struct otg_notify *n = udev->o_notify;
+	int index, ret = 0;
+	unsigned long long *p_param = NULL;
+#if defined(CONFIG_USB_TYPEC_MANAGER_NOTIFIER)
+	p_param = get_hw_param(n, USB_CCIC_WATER_INT_COUNT);
+	if (p_param)
+		*p_param += get_ccic_water_count();
+	p_param = get_hw_param(n, USB_CCIC_DRY_INT_COUNT);
+	if (p_param)
+		*p_param += get_ccic_dry_count();
+	p_param = get_hw_param(n, USB_CLIENT_SUPER_SPEED_COUNT);
+	if (p_param)
+		*p_param += get_usb310_count();
+	p_param = get_hw_param(n, USB_CLIENT_HIGH_SPEED_COUNT);
+	if (p_param)
+		*p_param += get_usb210_count();
+	p_param = get_hw_param(n, USB_CCIC_WATER_TIME_DURATION);
+	if (p_param)
+		*p_param += get_waterDet_duration();
+	p_param = get_hw_param(n, USB_CCIC_WATER_VBUS_COUNT);
+	if (p_param)
+		*p_param += get_waterChg_count();
+	p_param = get_hw_param(n, USB_CCIC_WATER_VBUS_TIME_DURATION);
+	if (p_param)
+		*p_param += get_wVbus_duration();
+	p_param = get_hw_param(n, USB_CCIC_VERSION);
+	if (p_param)
+		*p_param = show_ccic_version();
+#else
+	 p_param = get_hw_param(n, USB_CLIENT_SUPER_SPEED_COUNT);
+	 if (p_param)
+		 *p_param += microusb_get_usb310_count();
+	 p_param = get_hw_param(n, USB_CLIENT_HIGH_SPEED_COUNT);
+	 if (p_param)
+		 *p_param += microusb_get_usb210_count();
+#endif
+	for (index = 0; index < USB_CCIC_HW_PARAM_MAX - 1; index++) {
+		p_param = get_hw_param(n, index);
+		if (p_param)
+			ret += sprintf(buf + ret, "\"%s\":\"%llu\",",
+				usb_hw_param_print[index], *p_param);
+		else
+			ret += sprintf(buf + ret, "\"%s\":\"0\",",
+				usb_hw_param_print[index]);
+	}
+	/* CCIC FW version */
+	ret += sprintf(buf + ret, "\"%s\":\"",
+		usb_hw_param_print[index]);
+	p_param = get_hw_param(n, index);
+	if (p_param) {
+		/* HW Version */
+		ret += sprintf(buf + ret, "%02X%02X%02X%02X",
+			*((unsigned char *)p_param + 3),
+			*((unsigned char *)p_param + 2),
+			*((unsigned char *)p_param + 1),
+			*((unsigned char *)p_param));
+		/* SW Main Version */
+		ret += sprintf(buf + ret, "%02X%02X%02X",
+			*((unsigned char *)p_param + 6),
+			*((unsigned char *)p_param + 5),
+			*((unsigned char *)p_param + 4));
+		/* SW Boot Version */
+		ret += sprintf(buf + ret, "%02X",
+			*((unsigned char *)p_param + 7));
+		ret += sprintf(buf + ret, "\"\n");
+	} else
+		ret += sprintf(buf + ret, "0000000000000000\"\n");
+
+	pr_info("%s - ret : %d\n", __func__, ret);
+	return ret;
+}
+
+static ssize_t hw_param_store(
+		struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t size)
+{
+	struct usb_notify_dev *udev = (struct usb_notify_dev *)
+		dev_get_drvdata(dev);
+	struct otg_notify *n = udev->o_notify;
+	int index = 0;
+	size_t ret = -ENOMEM;
+	char *str = (char *)buf;
+
+	if (size > 2) {
+		pr_err("%s size(%zu) is too long.\n", __func__, size);
+		goto error;
+	}
+	ret = size;
+	pr_info("%s : %s\n", __func__, str);
+	if (!strncmp(str, "c", 1))
+		for (index = 0; index < USB_CCIC_HW_PARAM_MAX; index++)
+			*(get_hw_param(n, index)) = 0;
+error:
+	return ret;
+}
+#endif
+
+#if defined(CONFIG_USB_OTG_WHITELIST_FOR_MDM)
 char interface_class_name[USB_CLASS_VENDOR_SPEC][4] = {
 	{"PER"},
 	{"AUD"},
@@ -363,7 +534,7 @@ int set_usb_whitelist_array(const char *buf, int *whitelist_array)
 		if (whitelist_array[i])
 			valid_class_count++;
 	}
-	pr_info("%s valid_class_count = %d!\n", __func__, valid_class_count);
+	pr_info("%s : valid_class_count = %d!\n", __func__, valid_class_count);
 	return valid_class_count;
 }
 
@@ -377,7 +548,8 @@ static ssize_t whitelist_for_mdm_show(struct device *dev,
 		pr_err("udev is NULL\n");
 		return -EINVAL;
 	}
-	pr_info("%s read whitelist_classes %s\n",
+
+	pr_info("%s : read whitelist_classes %s\n",
 		__func__, udev->whitelist_str);
 	return sprintf(buf, "%s\n", udev->whitelist_str);
 }
@@ -388,7 +560,6 @@ static ssize_t whitelist_for_mdm_store(
 {
 	struct usb_notify_dev *udev = (struct usb_notify_dev *)
 		dev_get_drvdata(dev);
-	struct usb_notify* u_notify = container_of(udev, struct usb_notify, notify_dev);
 	char *disable;
 	int sret;
 	size_t ret = -ENOMEM;
@@ -406,9 +577,6 @@ static ssize_t whitelist_for_mdm_store(
 		goto error;
 	}
 
-	if (size < strlen(buf))
-		goto error;
-
 	disable = kzalloc(size+1, GFP_KERNEL);
 	if (!disable)
 		goto error;
@@ -416,68 +584,106 @@ static ssize_t whitelist_for_mdm_store(
 	sret = sscanf(buf, "%s", disable);
 	if (sret != 1)
 		goto error1;
-	pr_info("%s buf=%s\n", __func__, disable);
+	pr_info("%s : buf=%s\n", __func__, disable);
 
 	init_usb_whitelist_array(udev->whitelist_array_for_mdm);
 	/* To active displayport, hub class must be enabled */
 	if (!strncmp(buf, "ABL", 3)) {
 		udev->whitelist_array_for_mdm[USB_CLASS_HUB] = 1;
 		mdm_disable = NOTIFY_MDM_TYPE_ON;
-		u_notify->sec_whitelist_enable = 1;
-	} else if (!strncmp(buf, "OFF", 3)) {
+	} else if (!strncmp(buf, "OFF", 3))
 		mdm_disable = NOTIFY_MDM_TYPE_OFF;
-		u_notify->sec_whitelist_enable = 0;
-	} else {
+	else {
 		valid_whilelist_count =	set_usb_whitelist_array
 			(buf, udev->whitelist_array_for_mdm);
 		if (valid_whilelist_count > 0) {
 			udev->whitelist_array_for_mdm[USB_CLASS_HUB] = 1;
 			mdm_disable = NOTIFY_MDM_TYPE_ON;
-			u_notify->sec_whitelist_enable = 1;
-		} else {
+		} else
 			mdm_disable = NOTIFY_MDM_TYPE_OFF;
-			u_notify->sec_whitelist_enable = 0;
-		}
 	}
 
 	strncpy(udev->whitelist_str,
 		disable, sizeof(udev->whitelist_str)-1);
 
-	ret = size;
+	if (udev->set_mdm) {
+		udev->set_mdm(udev, mdm_disable);
+		ret = size;
+	} else {
+		pr_err("set_mdm func is NULL\n");
+		ret = -EINVAL;
+	}
 error1:
 	kfree(disable);
 error:
 	return ret;
 }
 
-static DEVICE_ATTR(disable, 0664, disable_show, disable_store);
 static DEVICE_ATTR(whitelist_for_mdm, 0664,
 	whitelist_for_mdm_show, whitelist_for_mdm_store);
+#endif
+static DEVICE_ATTR(disable, 0664, disable_show, disable_store);
+static DEVICE_ATTR(support, 0444, support_show, NULL);
+static DEVICE_ATTR(otg_speed, 0444, otg_speed_show, NULL);
+#if defined(CONFIG_USB_HW_PARAM)
+static DEVICE_ATTR(usb_hw_param, 0664, usb_hw_param_show, usb_hw_param_store);
+static DEVICE_ATTR(hw_param, 0664, hw_param_show, hw_param_store);
+#endif
 
 static struct attribute *usb_notify_attrs[] = {
 	&dev_attr_disable.attr,
+	&dev_attr_support.attr,
+	&dev_attr_otg_speed.attr,
+#if defined(CONFIG_USB_HW_PARAM)
+	&dev_attr_usb_hw_param.attr,
+	&dev_attr_hw_param.attr,
+#endif
+#if defined(CONFIG_USB_OTG_WHITELIST_FOR_MDM)
 	&dev_attr_whitelist_for_mdm.attr,
+#endif
 	NULL,
 };
 
-
-static struct attribute_group usb_notify_attr_group = {
+static struct attribute_group usb_notify_attr_grp = {
 	.attrs = usb_notify_attrs,
 };
+
+static int create_usb_notify_class(void)
+{
+	if (!usb_notify_data.usb_notify_class) {
+		usb_notify_data.usb_notify_class
+			= class_create(THIS_MODULE, "usb_notify");
+		if (IS_ERR(usb_notify_data.usb_notify_class))
+			return PTR_ERR(usb_notify_data.usb_notify_class);
+		atomic_set(&usb_notify_data.device_count, 0);
+	}
+
+	return 0;
+}
 
 int usb_notify_dev_register(struct usb_notify_dev *udev)
 {
 	int ret;
 
-	udev->dev = device_create(u_notify->usb_notify_class, NULL,
-		MKDEV(MAJOR_DEV, MINOR_DEV), NULL, udev->name);
+	if (!usb_notify_data.usb_notify_class) {
+		ret = create_usb_notify_class();
+		if (ret < 0)
+			return ret;
+	}
+
+	udev->index = atomic_inc_return(&usb_notify_data.device_count);
+	udev->dev = device_create(usb_notify_data.usb_notify_class, NULL,
+		MKDEV(0, udev->index), NULL, udev->name);
 	if (IS_ERR(udev->dev))
 		return PTR_ERR(udev->dev);
 
-	ret = sysfs_create_group(&udev->dev->kobj, &usb_notify_attr_group);
+	udev->disable_state = 0;
+	strncpy(udev->disable_state_cmd, "OFF",
+			sizeof(udev->disable_state_cmd)-1);
+	ret = sysfs_create_group(&udev->dev->kobj, &usb_notify_attr_grp);
 	if (ret < 0) {
-		device_destroy(u_notify->usb_notify_class,
-				MKDEV(MAJOR_DEV, MINOR_DEV));
+		device_destroy(usb_notify_data.usb_notify_class,
+				MKDEV(0, udev->index));
 		return ret;
 	}
 
@@ -488,66 +694,21 @@ EXPORT_SYMBOL_GPL(usb_notify_dev_register);
 
 void usb_notify_dev_unregister(struct usb_notify_dev *udev)
 {
-	sysfs_remove_group(&udev->dev->kobj, &usb_notify_attr_group);
-	device_destroy(u_notify->usb_notify_class, MKDEV(MAJOR_DEV, MINOR_DEV));
+	sysfs_remove_group(&udev->dev->kobj, &usb_notify_attr_grp);
+	device_destroy(usb_notify_data.usb_notify_class, MKDEV(0, udev->index));
 	dev_set_drvdata(udev->dev, NULL);
 }
 EXPORT_SYMBOL_GPL(usb_notify_dev_unregister);
 
-static int create_usb_notify_class(struct usb_notify* u_notify)
+int usb_notify_class_init(void)
 {
-	if (!u_notify->usb_notify_class) {
-		u_notify->usb_notify_class = class_create(THIS_MODULE, "usb_notify");
-		if (IS_ERR(u_notify->usb_notify_class))
-			return PTR_ERR(u_notify->usb_notify_class);
-	}
-
-	return 0;
-}
-
-int usb_notify_class_init(struct usb_notify* u_notify)
-{
-	return create_usb_notify_class(u_notify);
+	return create_usb_notify_class();
 }
 EXPORT_SYMBOL_GPL(usb_notify_class_init);
 
-void usb_notify_class_exit(struct usb_notify* u_notify)
+void usb_notify_class_exit(void)
 {
-	class_destroy(u_notify->usb_notify_class);
+	class_destroy(usb_notify_data.usb_notify_class);
 }
 EXPORT_SYMBOL_GPL(usb_notify_class_exit);
-
-
-int usb_otg_notifier_register(struct notifier_block *nb)
-{
-	return raw_notifier_chain_register(&usb_otg_notifier, nb);
-}
-EXPORT_SYMBOL_GPL(usb_otg_notifier_register);
-
-
-void usb_otg_notifier_unregister(struct notifier_block *nb)
-{
-	raw_notifier_chain_unregister(&usb_otg_notifier, nb);
-}
-EXPORT_SYMBOL_GPL(usb_otg_notifier_unregister);
-
-
-struct usb_notify * usb_get_notify(struct gadget_info *gi, char *name ,int len)
-{
-
-	if(u_notify != NULL) {
-		if(gi)
-			u_notify->usb_gi = gi;
-
-		if( (len > 0) && (len <= UDC_CMD_LEN) ) {
-			strncpy(u_notify->gi_name, name, len);
-			u_notify->gi_name[len] = '\0';
-		}
-		else
-			pr_err("usb notify gadget len err\n");
-	}
-
-	return u_notify;
-}
-EXPORT_SYMBOL_GPL(usb_get_notify);
 

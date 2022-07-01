@@ -31,9 +31,9 @@
  *      20140113 - change kmalloc to vmalloc for kfifo buffer
  *      20140211 - support multiple read URB.request
  *      20140221 - remove fifo_lock
- * 		- disable change transfer_size when online
+                 - disable change transfer_size when online
  *      20140228 - add android_usb_function callback registration code.
- *		- conditional conn_gadget_shortname for `android` and `tizen`
+ *               - conditional conn_gadget_shortname for `android` and `tizen`
  *      20140311 - add ioctl to communicate to userland application
  *      20140318 - add flush to wakeup ioctl sleep before handle close
  */
@@ -56,12 +56,6 @@
 #include <linux/vmalloc.h>
 #include <linux/fs.h>
 #include <asm/uaccess.h>
-#include <linux/file.h>
-#include <linux/configfs.h>
-#include <linux/usb/composite.h>
-
-/* platform specific definitions */
-/* ex) #define __ANDROID__ */
 
 /* platform specific pre-processing */
 #define CONN_GADGET_SHORTNAME "android_ssusbcon"
@@ -75,11 +69,10 @@
 #define CONN_GADGET_RX_REQ_MAX 4
 
 #define CONN_GADGET_DEFAULT_TRANSFER_SIZE	(4 * 1024)
-#define CONN_GADGET_DEFAULT_Q_SIZE 		(16 * (CONN_GADGET_RX_REQ_MAX))
-#define MAX_INST_NAME_LEN	40
+#define CONN_GADGET_DEFAULT_Q_SIZE          (16 * (CONN_GADGET_RX_REQ_MAX))
 
 /* ioctl */
-#include "f_conn_gadget.ioctl.h"
+#include "f_conn_gadget_ioctl.h"
 
 static const char conn_gadget_shortname[] = CONN_GADGET_SHORTNAME;
 
@@ -109,7 +102,7 @@ struct conn_gadget_dev {
 	wait_queue_head_t unbind_wq;
 
 	struct kfifo rd_queue;
-	void  *rd_queue_buf;
+	void* rd_queue_buf;
 
 	int transfer_size;
 	int rd_queue_size; //byte
@@ -121,8 +114,8 @@ struct conn_gadget_dev {
 	 * through IOCTL */
 	int memorized;
 
-	/* flag variable that save flush call status
-	* to check wakeup reason */
+    /* flag variable that save flush call status
+	 * to check wakeup reason */
 	atomic_t flush;
 };
 
@@ -133,10 +126,10 @@ static struct usb_interface_descriptor conn_gadget_interface_desc = {
 	.bNumEndpoints          = 2,
 	.bInterfaceClass        = 0xFF,
 	.bInterfaceSubClass     = 0x40,
-#ifdef CONFIG_USB_CONN_GADGET_NDOP
+#ifdef CONFIG_USB_F_CONN_GADGET_NDOP
 	.bInterfaceProtocol     = 3,
 #else
-	.bInterfaceProtocol     = 2,
+	.bInterfaceProtocol     = 1,
 #endif
 };
 
@@ -218,19 +211,13 @@ static struct usb_descriptor_header *ss_conn_gadget_descs[] = {
 };
 
 void conn_gadget_req_move(struct conn_gadget_dev *dev, struct list_head *from_head,
-		struct list_head *to_head, struct usb_request *req);
+        struct list_head *to_head, struct usb_request *req);
 
 struct usb_request *conn_gadget_req_get_ex(struct conn_gadget_dev *dev, struct list_head *head, int delete);
 struct usb_request* conn_gadget_req_get_from_rx_idle(struct conn_gadget_dev *dev);
 
 /* temporary variable used between conn_gadget_open() and conn_gadget_gadget_bind() */
 static struct conn_gadget_dev *_conn_gadget_dev;
-
-struct conn_gadget_instance {
-	struct usb_function_instance func_inst;
-	const char *name;
-};
-
 
 static inline struct conn_gadget_dev *func_to_conn_gadget(struct usb_function *f)
 {
@@ -336,7 +323,7 @@ static int conn_gadget_request_ep_out(struct conn_gadget_dev *dev)
 		req->length = dev->transfer_size;
 
 		conn_gadget_req_put(dev, &dev->rx_busy, req);
-		CONN_GADGET_DBG("rx %pK queue\n", req);
+        CONN_GADGET_DBG("rx %pK queue\n", req);
 
 		ret = usb_ep_queue(dev->ep_out, req, GFP_ATOMIC);
 		if (ret < 0) {
@@ -419,7 +406,7 @@ static void conn_gadget_complete_out(struct usb_ep *ep, struct usb_request *req)
 		goto done;
 	} else {
 		size = kfifo_in(&dev->rd_queue, req->buf, req->actual);
-		if (size != req->actual) {
+        if (size != req->actual) {
 			CONN_GADGET_ERR("!!! kfifo_in size(%d) is different with req->actual(%d) !!!\n", size, req->actual);
 		}
 	}
@@ -485,7 +472,7 @@ fail:
 	return -1;
 }
 
-static unsigned int conn_gadget_poll(struct file *fp, poll_table *wait)
+static unsigned int conn_gadget_poll(struct file* fp, poll_table *wait)
 {
 	unsigned int mask;
 	struct conn_gadget_dev *dev = fp->private_data;
@@ -766,7 +753,7 @@ static int conn_gadget_bind_status_copy_to_user(unsigned long value, int online)
 	unsigned long status = CONN_GADGET_IOCTL_BIND_STATUS_UNDEFINED;
 
 	status = (online)?CONN_GADGET_IOCTL_BIND_STATUS_BIND : CONN_GADGET_IOCTL_BIND_STATUS_UNBIND;
-	err = copy_to_user((void __user *)value, (const void *)&status, sizeof(status));
+	err = copy_to_user((void __user *)value, (const void*)&status, sizeof(status));
 	if (err) {
 		CONN_GADGET_ERR("copy_to_user f %d\n", err);
 		err = -EFAULT;
@@ -829,33 +816,33 @@ static long conn_gadget_ioctl(struct file *fp, unsigned int cmd,
 		}
 		break;
 /** NOTE:
-I think, memorized and online vairiable should be atomic variable. talk to choi */
-	case CONN_GADGET_IOCTL_BIND_WAIT_NOTIFY:
-		CONN_GADGET_DBG("in wait_event\n");
-		wait_event_interruptible(dev->ioctl_wq,
-				(dev->memorized != dev->online)
-				|| (flushed = atomic_read(&dev->flush)));
-		dev->memorized = dev->online;
-		CONN_GADGET_DBG("out wait_event\n");
+	I think, memorized and online vairiable should be atomic variable. talk to choi */
+		case CONN_GADGET_IOCTL_BIND_WAIT_NOTIFY:
+			CONN_GADGET_DBG("in wait_event\n");
+			wait_event_interruptible(dev->ioctl_wq,
+					(dev->memorized!=dev->online)
+					||(flushed = atomic_read(&dev->flush)));
+			dev->memorized = dev->online;
+			CONN_GADGET_DBG("out wait_event\n");
 
-		if (flushed) {
-			CONN_GADGET_ERR("close called\n");
-			err = -EINTR;
+			if (flushed) {
+				CONN_GADGET_ERR("close called\n");
+				err = -EINTR;
+				break;
+			}
+
+			err = conn_gadget_bind_status_copy_to_user(value, dev->online);
+			if (err) {
+				CONN_GADGET_ERR("WAIT_NOTIFY copy_to_user f %d\n", err);
+			}
 			break;
-		}
 
-		err = conn_gadget_bind_status_copy_to_user(value, dev->online);
-		if (err) {
-			CONN_GADGET_ERR("WAIT_NOTIFY copy_to_user f %d\n", err);
-		}
-		break;
-
-	case CONN_GADGET_IOCTL_BIND_GET_STATUS:
-		err = conn_gadget_bind_status_copy_to_user(value, dev->online);
-		if (err) {
-			CONN_GADGET_ERR("GET_STATUS copy_to_user f %d\n", err);
-		}
-		break;
+		case CONN_GADGET_IOCTL_BIND_GET_STATUS:
+			err = conn_gadget_bind_status_copy_to_user(value, dev->online);
+			if (err) {
+				CONN_GADGET_ERR("GET_STATUS copy_to_user f %d\n", err);
+			}
+			break;
 	}
 
 	return err;
@@ -925,7 +912,7 @@ conn_gadget_function_bind(struct usb_configuration *c, struct usb_function *f)
 	}
 
 	printk(KERN_ERR "%s speed %s: IN/%s, OUT/%s\n",
-	gadget_is_superspeed(c->cdev->gadget) ? "super" :
+            gadget_is_superspeed(c->cdev->gadget) ? "super" :
 			gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full",
 			f->name, dev->ep_in->name, dev->ep_out->name);
 	return 0;
@@ -958,7 +945,6 @@ conn_gadget_function_unbind(struct usb_configuration *c, struct usb_function *f)
 	} else {
 		ep_out_excl_locked = 1;
 	}
-
 	while ((req = conn_gadget_req_get(dev, &dev->rx_idle)))
 		conn_gadget_request_free(req, dev->ep_out);
 
@@ -981,7 +967,7 @@ static int conn_gadget_function_set_alt(struct usb_function *f,
 
 	printk(KERN_ERR "%s: intf: %d alt: %d\n", __func__, intf, alt);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 4, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,4,0)
 	ret = config_ep_by_speed(cdev->gadget, f, dev->ep_in);
 	if (ret)
 		return ret;
@@ -997,7 +983,7 @@ static int conn_gadget_function_set_alt(struct usb_function *f,
 		return ret;
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 4, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,4,0)
 	ret = config_ep_by_speed(cdev->gadget, f, dev->ep_out);
 	if (ret) {
 		usb_ep_disable(dev->ep_in);
@@ -1062,7 +1048,6 @@ static void conn_gadget_function_disable(struct usb_function *f)
 	pr_debug("%s disabled\n", dev->function.name);
 }
 
-#if 0
 static int conn_gadget_bind_config(struct usb_configuration *c)
 {
 	struct conn_gadget_dev *dev = _conn_gadget_dev;
@@ -1072,7 +1057,7 @@ static int conn_gadget_bind_config(struct usb_configuration *c)
 	dev->cdev = c->cdev;
 	dev->function.name = "conn_gadget";
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
 	dev->function.fs_descriptors = fs_conn_gadget_descs;
 #else
 	dev->function.descriptors = fs_conn_gadget_descs;
@@ -1087,14 +1072,71 @@ static int conn_gadget_bind_config(struct usb_configuration *c)
 
 	return usb_add_function(c, &dev->function);
 }
-#endif
 
+static int conn_gadget_setup(void)
+{
+	struct conn_gadget_dev *dev;
+	int ret;
+
+	printk(KERN_INFO "conn_gadget_setup\n");
+
+	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	if (!dev) {
+		printk(KERN_ERR "alloc conn_gadget_dev F\n");
+		return -ENOMEM;
+	}
+
+	spin_lock_init(&dev->lock);
+
+	init_waitqueue_head(&dev->read_wq);
+	init_waitqueue_head(&dev->write_wq);
+	init_waitqueue_head(&dev->ioctl_wq);
+	init_waitqueue_head(&dev->unbind_wq);
+
+	atomic_set(&dev->open_excl, 0);
+	atomic_set(&dev->read_excl, 0);
+	atomic_set(&dev->write_excl, 0);
+	atomic_set(&dev->flush, 0);
+	atomic_set(&dev->ep_out_excl, 0);
+
+	INIT_LIST_HEAD(&dev->tx_idle);
+	INIT_LIST_HEAD(&dev->rx_idle);
+	INIT_LIST_HEAD(&dev->rx_busy);
+
+	dev->transfer_size  = CONN_GADGET_DEFAULT_TRANSFER_SIZE;
+	dev->rd_queue_size  = dev->transfer_size * CONN_GADGET_DEFAULT_Q_SIZE;
+	dev->rd_queue_buf   = vmalloc(dev->rd_queue_size);
+	if (!dev->rd_queue_buf) {
+		printk(KERN_ERR "%s: error rd_queue vmalloc\n", __func__);
+		ret = -ENOMEM;
+		goto err;
+	}
+	kfifo_init(&dev->rd_queue, dev->rd_queue_buf, dev->rd_queue_size);
+
+	_conn_gadget_dev = dev;
+
+	ret = misc_register(&conn_gadget_device);
+	if (ret) {
+		printk(KERN_ERR "%s: misc_register f %d\n", __func__, ret);
+		goto err;
+	}
+
+	return 0;
+
+err:
+    if (dev->rd_queue_buf) vfree(dev->rd_queue_buf);
+
+	_conn_gadget_dev = NULL;
+	kfree(dev);
+	CONN_GADGET_ERR("conn_gadget gadget driver failed to initialize\n");
+	return ret;
+}
 
 static ssize_t conn_gadget_usb_buffer_size_show(struct device *dev,
-		struct device_attribute *attr, char *buf) {
-	if (!_conn_gadget_dev) {
-		CONN_GADGET_ERR("_conn_gadget_dev is NULL\n");
-	return -ENODEV;
+        struct device_attribute *attr, char *buf) {
+    if (!_conn_gadget_dev) {
+        CONN_GADGET_ERR("_conn_gadget_dev is NULL\n");
+        return -ENODEV;
     }
 
     return sprintf(buf, "%d\n", (_conn_gadget_dev->transfer_size / 1024));
@@ -1133,9 +1175,9 @@ static ssize_t conn_gadget_usb_buffer_size_store(struct device *dev,
 	if (_conn_gadget_dev->rd_queue_buf)
 		vfree(_conn_gadget_dev->rd_queue_buf);
 
-	_conn_gadget_dev->transfer_size 	= value * 1024;
-	_conn_gadget_dev->rd_queue_size 	= kfifo_size;
-	_conn_gadget_dev->rd_queue_buf 		= rd_queue_buf;
+	_conn_gadget_dev->transfer_size     = value * 1024;
+	_conn_gadget_dev->rd_queue_size     = kfifo_size;
+	_conn_gadget_dev->rd_queue_buf      = rd_queue_buf;
 
 	kfifo_reset(&_conn_gadget_dev->rd_queue);
 	kfifo_init(&_conn_gadget_dev->rd_queue,
@@ -1191,109 +1233,6 @@ static ssize_t conn_gadget_in_max_packet_size_store(
 	return size;
 }
 
-
-static DEVICE_ATTR(usb_buffer_size, S_IRUGO | S_IWUSR,
-	conn_gadget_usb_buffer_size_show,
-	conn_gadget_usb_buffer_size_store);
-
-static DEVICE_ATTR(out_max_packet_size, S_IRUGO | S_IWUSR,
-	conn_gadget_out_max_packet_size_show,
-	conn_gadget_out_max_packet_size_store);
-
-static DEVICE_ATTR(in_max_packet_size, S_IRUGO | S_IWUSR,
-	conn_gadget_in_max_packet_size_show,
-	conn_gadget_in_max_packet_size_store);
-
-
-
-static struct device_attribute *conn_gadget_function_attributes[] = {
-	&dev_attr_usb_buffer_size,
-	&dev_attr_out_max_packet_size,
-	&dev_attr_in_max_packet_size,
-	NULL
-};
-
-extern struct device *create_function_device(char *name);
-
-static int conn_gadget_setup(struct conn_gadget_instance *fi_conn_gadget)
-{
-	struct conn_gadget_dev *dev;
-	struct device *android_dev;
-	struct device_attribute **attrs;
-	struct device_attribute *attr;
-	int ret;
-	int err = 0;
-
-	printk(KERN_INFO "conn_gadget_setup\n");
-
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (!dev) {
-		printk(KERN_ERR "alloc conn_gadget_dev F\n");
-		return -ENOMEM;
-	}
-
-	spin_lock_init(&dev->lock);
-
-	init_waitqueue_head(&dev->read_wq);
-	init_waitqueue_head(&dev->write_wq);
-	init_waitqueue_head(&dev->ioctl_wq);
-	init_waitqueue_head(&dev->unbind_wq);
-
-	atomic_set(&dev->open_excl, 0);
-	atomic_set(&dev->read_excl, 0);
-	atomic_set(&dev->write_excl, 0);
-	atomic_set(&dev->flush, 0);
-	atomic_set(&dev->ep_out_excl, 0);
-
-	INIT_LIST_HEAD(&dev->tx_idle);
-	INIT_LIST_HEAD(&dev->rx_idle);
-	INIT_LIST_HEAD(&dev->rx_busy);
-
-	dev->transfer_size 	= CONN_GADGET_DEFAULT_TRANSFER_SIZE;
-	dev->rd_queue_size 	= dev->transfer_size * CONN_GADGET_DEFAULT_Q_SIZE;
-	dev->rd_queue_buf 	= vmalloc(dev->rd_queue_size);
-	if (!dev->rd_queue_buf) {
-		printk(KERN_ERR "%s: error rd_queue vmalloc\n", __func__);
-		ret = -ENOMEM;
-		goto err_;
-	}
-	kfifo_init(&dev->rd_queue, dev->rd_queue_buf, dev->rd_queue_size);
-
-	_conn_gadget_dev = dev;
-
-	ret = misc_register(&conn_gadget_device);
-	if (ret) {
-		printk(KERN_ERR "%s: misc_register f %d\n", __func__, ret);
-		goto err_;
-	}
-
-	android_dev = create_function_device("f_conn_gadget");
-	if (IS_ERR(android_dev))
-		return PTR_ERR(android_dev);
-
-	attrs = conn_gadget_function_attributes;
-
-	if (attrs) {
-		while ((attr = *attrs++) && !err)
-			err = device_create_file(android_dev, attr);
-		if (err) {
-			device_destroy(android_dev->class, android_dev->devt);
-			goto err_;
-		}
-	}
-
-	return 0;
-err_:
-
-    if (dev->rd_queue_buf)
-	vfree(dev->rd_queue_buf);
-
-	_conn_gadget_dev = NULL;
-	kfree(dev);
-	CONN_GADGET_ERR("conn_gadget gadget driver failed to initialize\n");
-	return ret;
-}
-
 static void conn_gadget_cleanup(void)
 {
 	printk(KERN_INFO "conn_gadget_cleanup\n");
@@ -1306,133 +1245,13 @@ static void conn_gadget_cleanup(void)
 	misc_deregister(&conn_gadget_device);
 
     if (_conn_gadget_dev->rd_queue_buf)
-	vfree(_conn_gadget_dev->rd_queue_buf);
+        vfree(_conn_gadget_dev->rd_queue_buf);
 
 	kfree(_conn_gadget_dev);
 	_conn_gadget_dev = NULL;
 }
 
-static int conn_gadget_setup_configfs(struct conn_gadget_instance *fi_conn_gadget)
-{
-	return conn_gadget_setup(fi_conn_gadget);
-}
-
-static struct conn_gadget_instance *to_conn_gadget_instance(struct config_item *item)
-{
-	return container_of(to_config_group(item), struct conn_gadget_instance,
-		func_inst.group);
-}
-
-static void conn_gadget_attr_release(struct config_item *item)
-{
-	struct conn_gadget_instance *fi_conn_gadget = to_conn_gadget_instance(item);
-	usb_put_function_instance(&fi_conn_gadget->func_inst);
-}
-
-
-static struct configfs_item_operations conn_gadget_item_ops = {
-	.release        = conn_gadget_attr_release,
-};
-
-static struct config_item_type conn_gadget_func_type = {
-	.ct_item_ops    = &conn_gadget_item_ops,
-	.ct_owner       = THIS_MODULE,
-};
-
-static struct conn_gadget_instance *to_fi_conn_gadget(struct usb_function_instance *fi)
-{
-	return container_of(fi, struct conn_gadget_instance, func_inst);
-}
-
-static int conn_gadget_set_inst_name(struct usb_function_instance *fi, const char *name)
-{
-	struct conn_gadget_instance *fi_conn_gadget;
-	char *ptr;
-	int name_len;
-
-	name_len = strlen(name) + 1;
-	if (name_len > MAX_INST_NAME_LEN)
-		return -ENAMETOOLONG;
-
-	ptr = kstrndup(name, name_len, GFP_KERNEL);
-	if (!ptr)
-		return -ENOMEM;
-
-	fi_conn_gadget = to_fi_conn_gadget(fi);
-	fi_conn_gadget->name = ptr;
-
-	return 0;
-}
-
-static void conn_gadget_free_inst(struct usb_function_instance *fi)
-{
-	struct conn_gadget_instance *fi_conn_gadget;
-
-	fi_conn_gadget = to_fi_conn_gadget(fi);
-	kfree(fi_conn_gadget->name);
-	conn_gadget_cleanup();
-	kfree(fi_conn_gadget);
-}
-
-struct usb_function_instance *alloc_inst_conn_gadget(void)
-{
-	struct conn_gadget_instance *fi_conn;
-	int err;
-
-	fi_conn = kzalloc(sizeof(*fi_conn), GFP_KERNEL);
-
-	if (!fi_conn)
-		return ERR_PTR(-ENOMEM);
-
-	fi_conn->func_inst.set_inst_name = conn_gadget_set_inst_name;
-	fi_conn->func_inst.free_func_inst = conn_gadget_free_inst;
-
-	err = conn_gadget_setup_configfs(fi_conn);
-
-	if (err) {
-		kfree(fi_conn);
-		pr_err("Error setting conn gadget\n");
-		return ERR_PTR(err);
-	}
-
-	config_group_init_type_name(&fi_conn->func_inst.group,
-					"", &conn_gadget_func_type);
-
-	return  &fi_conn->func_inst;
-
-}
-EXPORT_SYMBOL_GPL(alloc_inst_conn_gadget);
-
-static struct usb_function_instance *conn_gadget_alloc_inst(void)
-{
-		return alloc_inst_conn_gadget();
-}
-
-static void conn_gadget_free(struct usb_function *f)
-{
-	/*NO-OP: no function specific resource allocation in conn_gadget_alloc*/
-}
-
-static struct usb_function *conn_gadget_alloc(struct usb_function_instance *fi)
-{
-	struct conn_gadget_dev *dev = _conn_gadget_dev;
-
-	dev->function.name = "conn_gadget";
-	dev->function.fs_descriptors = fs_conn_gadget_descs;
-	dev->function.hs_descriptors = hs_conn_gadget_descs;
-	dev->function.ss_descriptors = ss_conn_gadget_descs;
-	dev->function.bind = conn_gadget_function_bind;
-	dev->function.unbind = conn_gadget_function_unbind;
-	dev->function.set_alt = conn_gadget_function_set_alt;
-	dev->function.disable = conn_gadget_function_disable;
-	dev->function.free_func = conn_gadget_free;
-
-	return &dev->function;
-}
-
-DECLARE_USB_FUNCTION_INIT(conn_gadget, conn_gadget_alloc_inst, conn_gadget_alloc);
-
-/*
+/* DEVGURU *******************************************************************/
 static int conn_gadget_function_init(struct android_usb_function *f, struct usb_composite_dev *cdev)
 {
 	printk(KERN_ERR "%s(#) call conn_gadget_setup\n", __func__);
@@ -1450,7 +1269,33 @@ static int conn_gadget_function_bind_config(struct android_usb_function *f, stru
 	printk(KERN_ERR "%s(#) call conn_gadget_bind_config\n", __func__);
 	return conn_gadget_bind_config(c);
 }
-*/
 
 
+static DEVICE_ATTR(usb_buffer_size, S_IRUGO | S_IWUSR,
+	conn_gadget_usb_buffer_size_show,
+	conn_gadget_usb_buffer_size_store);
+
+static DEVICE_ATTR(out_max_packet_size, S_IRUGO | S_IWUSR,
+	conn_gadget_out_max_packet_size_show,
+	conn_gadget_out_max_packet_size_store);
+
+static DEVICE_ATTR(in_max_packet_size, S_IRUGO | S_IWUSR,
+	conn_gadget_in_max_packet_size_show,
+	conn_gadget_in_max_packet_size_store);
+
+static struct device_attribute *conn_gadget_function_attributes[] = {
+	&dev_attr_usb_buffer_size,
+	&dev_attr_out_max_packet_size,
+	&dev_attr_in_max_packet_size,
+	NULL
+};
+
+struct android_usb_function conn_gadget_function = {
+	.name		= "conn_gadget",
+	.init		= conn_gadget_function_init,
+	.cleanup	= conn_gadget_function_cleanup,
+	.bind_config	= conn_gadget_function_bind_config,
+	.attributes	= conn_gadget_function_attributes,
+};
+/* End DEVGURU ***************************************************************/
 

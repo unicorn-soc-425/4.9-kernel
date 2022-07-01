@@ -18,15 +18,7 @@
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/msm_gsi.h>
-#include <linux/errno.h>
 #include <linux/ipc_logging.h>
-
-/*
- * The following for adding code (ie. for EMULATION) not found on x86.
- */
-#if IPA_EMULATION_COMPILE == 1
-# include "gsi_emulation_stubs.h"
-#endif
 
 #define GSI_CHAN_MAX      31
 #define GSI_EVT_RING_MAX  23
@@ -213,13 +205,6 @@ struct gsi_ctx {
 	struct completion gen_ee_cmd_compl;
 	void *ipc_logbuf;
 	void *ipc_logbuf_low;
-	/*
-	 * The following used only on emulation systems.
-	 */
-	void __iomem *intcntrlr_base;
-	u32 intcntrlr_mem_size;
-	irq_handler_t intcntrlr_gsi_isr;
-	irq_handler_t intcntrlr_client_isr;
 };
 
 enum gsi_re_type {
@@ -304,7 +289,6 @@ enum gsi_generic_ee_cmd_return_code {
 	GSI_GEN_EE_CMD_RETURN_CODE_INCORRECT_DIRECTION = 0x3,
 	GSI_GEN_EE_CMD_RETURN_CODE_INCORRECT_CHANNEL_TYPE = 0x4,
 	GSI_GEN_EE_CMD_RETURN_CODE_INCORRECT_CHANNEL_INDEX = 0x5,
-	GSI_GEN_EE_CMD_RETURN_CODE_RETRY = 0x6,
 };
 
 extern struct gsi_ctx *gsi_ctx;

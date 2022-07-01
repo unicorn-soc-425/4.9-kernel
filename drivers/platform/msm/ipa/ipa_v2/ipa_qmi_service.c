@@ -39,8 +39,6 @@
 #define QMI_SEND_STATS_REQ_TIMEOUT_MS 5000
 #define QMI_SEND_REQ_TIMEOUT_MS 60000
 
-#define QMI_IPA_FORCE_CLEAR_DATAPATH_TIMEOUT_MS 1000
-
 static struct qmi_handle *ipa_svc_handle;
 static void ipa_a5_svc_recv_msg(struct work_struct *work);
 static DECLARE_DELAYED_WORK(work_recv_msg, ipa_a5_svc_recv_msg);
@@ -495,8 +493,6 @@ static int qmi_init_modem_send_sync_msg(void)
 	resp_desc.ei_array = ipa_init_modem_driver_resp_msg_data_v01_ei;
 
 	pr_info("Sending QMI_IPA_INIT_MODEM_DRIVER_REQ_V01\n");
-	if (unlikely(!ipa_q6_clnt))
-		return -ETIMEDOUT;
 	rc = qmi_send_req_wait(ipa_q6_clnt, &req_desc, &req, sizeof(req),
 			&resp_desc, &resp, sizeof(resp),
 			QMI_SEND_REQ_TIMEOUT_MS);
@@ -583,8 +579,7 @@ int qmi_filter_request_send(struct ipa_install_fltr_rule_req_msg_v01 *req)
 		QMI_IPA_INSTALL_FILTER_RULE_RESP_MAX_MSG_LEN_V01;
 	resp_desc.msg_id = QMI_IPA_INSTALL_FILTER_RULE_RESP_V01;
 	resp_desc.ei_array = ipa_install_fltr_rule_resp_msg_data_v01_ei;
-	if (unlikely(!ipa_q6_clnt))
-		return -ETIMEDOUT;
+
 	rc = qmi_send_req_wait(ipa_q6_clnt, &req_desc,
 			req,
 			sizeof(struct ipa_install_fltr_rule_req_msg_v01),
@@ -620,14 +615,12 @@ int qmi_enable_force_clear_datapath_send(
 	resp_desc.msg_id = QMI_IPA_ENABLE_FORCE_CLEAR_DATAPATH_RESP_V01;
 	resp_desc.ei_array =
 		ipa_enable_force_clear_datapath_resp_msg_data_v01_ei;
-	if (unlikely(!ipa_q6_clnt))
-		return -ETIMEDOUT;
+
 	rc = qmi_send_req_wait(ipa_q6_clnt,
 			&req_desc,
 			req,
 			sizeof(*req),
-			&resp_desc, &resp, sizeof(resp),
-			QMI_IPA_FORCE_CLEAR_DATAPATH_TIMEOUT_MS);
+			&resp_desc, &resp, sizeof(resp), 0);
 	if (rc < 0) {
 		IPAWANERR("send req failed %d\n", rc);
 		return rc;
@@ -666,14 +659,12 @@ int qmi_disable_force_clear_datapath_send(
 	resp_desc.msg_id = QMI_IPA_DISABLE_FORCE_CLEAR_DATAPATH_RESP_V01;
 	resp_desc.ei_array =
 		ipa_disable_force_clear_datapath_resp_msg_data_v01_ei;
-	if (unlikely(!ipa_q6_clnt))
-		return -ETIMEDOUT;
+
 	rc = qmi_send_req_wait(ipa_q6_clnt,
 			&req_desc,
 			req,
 			sizeof(*req),
-			&resp_desc, &resp, sizeof(resp),
-			QMI_IPA_FORCE_CLEAR_DATAPATH_TIMEOUT_MS);
+			&resp_desc, &resp, sizeof(resp), 0);
 	if (rc < 0) {
 		IPAWANERR("send req failed %d\n", rc);
 		return rc;
@@ -696,7 +687,7 @@ int qmi_filter_notify_send(struct ipa_fltr_installed_notif_req_msg_v01 *req)
 
 	/* check if the filter rules from IPACM is valid */
 	if (req->filter_index_list_len == 0) {
-		IPAWANDBG(" delete UL filter rule for pipe %d\n",
+		IPAWANERR(" delete UL filter rule for pipe %d\n",
 		req->source_pipe_index);
 	} else if (req->filter_index_list_len > QMI_IPA_MAX_FILTERS_V01) {
 		IPAWANERR(" UL filter rule for pipe %d exceed max (%u)\n",
@@ -758,8 +749,7 @@ int qmi_filter_notify_send(struct ipa_fltr_installed_notif_req_msg_v01 *req)
 		QMI_IPA_FILTER_INSTALLED_NOTIF_RESP_MAX_MSG_LEN_V01;
 	resp_desc.msg_id = QMI_IPA_FILTER_INSTALLED_NOTIF_RESP_V01;
 	resp_desc.ei_array = ipa_fltr_installed_notif_resp_msg_data_v01_ei;
-	if (unlikely(!ipa_q6_clnt))
-		return -ETIMEDOUT;
+
 	rc = qmi_send_req_wait(ipa_q6_clnt,
 			&req_desc,
 			req,
@@ -811,7 +801,7 @@ static void ipa_q6_clnt_ind_cb(struct qmi_handle *handle, unsigned int msg_id,
 		return;
 	}
 
-	if (msg_id == QMI_IPA_DATA_USAGE_QUOTA_REACHED_IND_V01) {
+	if (QMI_IPA_DATA_USAGE_QUOTA_REACHED_IND_V01 == msg_id) {
 		memset(&qmi_ind, 0, sizeof(
 			struct ipa_data_usage_quota_reached_ind_msg_v01));
 		qmi_ind_desc.max_msg_len =
@@ -828,8 +818,7 @@ static void ipa_q6_clnt_ind_cb(struct qmi_handle *handle, unsigned int msg_id,
 		IPAWANDBG("Quota reached indication on qmux(%d) Mbytes(%lu)\n",
 			  qmi_ind.apn.mux_id,
 			  (unsigned long int) qmi_ind.apn.num_Mbytes);
-		ipa_broadcast_quota_reach_ind(qmi_ind.apn.mux_id,
-			  IPA_UPSTEAM_MODEM);
+		ipa_broadcast_quota_reach_ind(qmi_ind.apn.mux_id);
 	}
 }
 
@@ -1039,8 +1028,9 @@ int ipa_qmi_service_init(uint32_t wan_platform_type)
 	qmi_indication_fin = false;
 	atomic_set(&workqueues_stopped, 0);
 
-	if (atomic_read(&ipa_qmi_initialized) == 0)
+	if (0 == atomic_read(&ipa_qmi_initialized)) {
 		ipa_qmi_service_init_worker();
+	}
 	return 0;
 }
 
@@ -1160,8 +1150,7 @@ int ipa_qmi_get_data_stats(struct ipa_get_data_stats_req_msg_v01 *req,
 	resp_desc.ei_array = ipa_get_data_stats_resp_msg_data_v01_ei;
 
 	IPAWANDBG_LOW("Sending QMI_IPA_GET_DATA_STATS_REQ_V01\n");
-	if (unlikely(!ipa_q6_clnt))
-		return -ETIMEDOUT;
+
 	rc = qmi_send_req_wait(ipa_q6_clnt, &req_desc, req,
 			sizeof(struct ipa_get_data_stats_req_msg_v01),
 			&resp_desc, resp,
@@ -1190,8 +1179,7 @@ int ipa_qmi_get_network_stats(struct ipa_get_apn_data_stats_req_msg_v01 *req,
 	resp_desc.ei_array = ipa_get_apn_data_stats_resp_msg_data_v01_ei;
 
 	IPAWANDBG_LOW("Sending QMI_IPA_GET_APN_DATA_STATS_REQ_V01\n");
-	if (unlikely(!ipa_q6_clnt))
-		return -ETIMEDOUT;
+
 	rc = qmi_send_req_wait(ipa_q6_clnt, &req_desc, req,
 			sizeof(struct ipa_get_apn_data_stats_req_msg_v01),
 			&resp_desc, resp,
@@ -1223,8 +1211,7 @@ int ipa_qmi_set_data_quota(struct ipa_set_data_usage_quota_req_msg_v01 *req)
 	resp_desc.ei_array = ipa_set_data_usage_quota_resp_msg_data_v01_ei;
 
 	IPAWANDBG_LOW("Sending QMI_IPA_SET_DATA_USAGE_QUOTA_REQ_V01\n");
-	if (unlikely(!ipa_q6_clnt))
-		return -ETIMEDOUT;
+
 	rc = qmi_send_req_wait(ipa_q6_clnt, &req_desc, req,
 			sizeof(struct ipa_set_data_usage_quota_req_msg_v01),
 			&resp_desc, &resp, sizeof(resp),
@@ -1258,8 +1245,7 @@ int ipa_qmi_stop_data_qouta(void)
 	resp_desc.ei_array = ipa_stop_data_usage_quota_resp_msg_data_v01_ei;
 
 	IPAWANDBG_LOW("Sending QMI_IPA_STOP_DATA_USAGE_QUOTA_REQ_V01\n");
-	if (unlikely(!ipa_q6_clnt))
-		return -ETIMEDOUT;
+
 	rc = qmi_send_req_wait(ipa_q6_clnt, &req_desc, &req, sizeof(req),
 		&resp_desc, &resp, sizeof(resp),
 		QMI_SEND_STATS_REQ_TIMEOUT_MS);

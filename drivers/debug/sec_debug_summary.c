@@ -3,7 +3,7 @@
  *
  * driver supporting debug functions for Samsung device
  *
- * COPYRIGHT(C) 2006-2017 Samsung Electronics Co., Ltd. All Right Reserved.
+ * COPYRIGHT(C) 2006-2016 Samsung Electronics Co., Ltd. All Right Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,32 +20,28 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
-#define pr_fmt(fmt)     KBUILD_MODNAME ":%s: " fmt, __func__
-
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/ctype.h>
-#include <linux/soc/qcom/smem.h>
 #include <soc/qcom/smem.h>
 #include <linux/ptrace.h>
-//#include <linux/sched.h>
 #include <asm/processor.h>
-#include <asm/irq.h>
-#include <asm/memory.h>
-#include <asm/pgtable.h>
-#include <asm/sections.h>
 
-#include <linux/sec_bsp.h>
 #include <linux/sec_debug.h>
-#include <linux/sec_debug_user_reset.h>
 #include <linux/sec_debug_summary.h>
 
-#include "sec_debug_internal.h"
+#ifdef CONFIG_USER_RESET_DEBUG
+#include <linux/user_reset/sec_debug_user_reset.h>
+#endif
 
 struct sec_debug_summary *secdbg_summary;
 struct sec_debug_summary_data_apss *secdbg_apss;
+extern phys_addr_t secdbg_paddr;
+extern unsigned int secdbg_size;
+extern struct sec_debug_log *secdbg_log;
 static char build_root[] = __FILE__;
 
+extern unsigned int system_rev;
 static uint32_t tzapps_start_addr;
 static uint32_t tzapps_size;
 
@@ -61,9 +57,6 @@ static unsigned long max_cpu_ctx_size;
 unsigned int cpu_frequency[CONFIG_NR_CPUS];
 unsigned int cpu_volt[CONFIG_NR_CPUS];
 char cpu_state[CONFIG_NR_CPUS][VAR_NAME_MAX];
-EXPORT_SYMBOL(cpu_frequency);
-EXPORT_SYMBOL(cpu_volt);
-EXPORT_SYMBOL(cpu_state);
 #endif
 
 #ifdef CONFIG_ARM64
@@ -187,7 +180,7 @@ int sec_debug_summary_add_varmon(char *name, unsigned int size, phys_addr_t pa)
 	if (!secdbg_apss)
 		return -ENOMEM;
 
-	if (secdbg_apss->var_mon.idx >= ARRAY_SIZE(secdbg_apss->var_mon.var))
+	if (secdbg_apss->var_mon.idx > ARRAY_SIZE(secdbg_apss->var_mon.var))
 		return -ENOMEM;
 
 	strlcpy(secdbg_apss->var_mon.var[secdbg_apss->var_mon.idx].name, name,
@@ -250,20 +243,10 @@ static int __init _set_kconst(struct sec_debug_summary_data_apss *p)
 	p->kconst.nr_cpus = NR_CPUS;
 	p->kconst.per_cpu_offset.pa = virt_to_phys(__per_cpu_offset);
 	p->kconst.per_cpu_offset.size = sizeof(__per_cpu_offset[0]);
-	p->kconst.per_cpu_offset.count = sizeof(__per_cpu_offset) /
-					sizeof(__per_cpu_offset[0]);
-	p->kconst.phys_offset = PHYS_OFFSET;
-	p->kconst.page_offset = PAGE_OFFSET;
-	p->kconst.va_bits = VA_BITS;
-	p->kconst.kimage_vaddr = kimage_vaddr;
-	p->kconst.kimage_voffset = kimage_voffset;
-	p->kconst.swapper_pg_dir_paddr = __pa_symbol(swapper_pg_dir);
+	p->kconst.per_cpu_offset.count = sizeof(__per_cpu_offset)/sizeof(__per_cpu_offset[0]);
+	p->kconst.virt_to_phys = (uintptr_t)virt_to_phys(0);
+	p->kconst.phys_to_virt = (uintptr_t)phys_to_virt(0);
 
-#ifdef CONFIG_VMAP_STACK
-	p->kconst.vmap_stack = 1;
-#else
-	p->kconst.vmap_stack = 0;
-#endif	
 	return 0;
 }
 
@@ -273,14 +256,12 @@ static int __init summary_init_infomon(void)
 		ADD_STR_TO_INFOMON(build_root);
 	ADD_STR_TO_INFOMON(linux_banner);
 #ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
-	sec_debug_summary_add_infomon("Kernel cmdline", -1,
-				      __pa(erased_command_line));
+	sec_debug_summary_add_infomon("Kernel cmdline", -1, __pa(erased_command_line));
 #else
-	sec_debug_summary_add_infomon("Kernel cmdline", -1,
-				      __pa(saved_command_line));
+	sec_debug_summary_add_infomon("Kernel cmdline", -1, __pa(saved_command_line));
 #endif
-	sec_debug_summary_add_infomon("Hardware name", -1,
-				      __pa(sec_debug_arch_desc));
+	sec_debug_summary_add_infomon("Hardware name", -1, __pa(sec_debug_arch_desc));
+	ADD_VAR_TO_INFOMON(system_rev);
 
 	return 0;
 }
@@ -299,7 +280,8 @@ static int __init summary_init_varmon(void)
 		sec_debug_summary_add_varmon("last_pet",
 			sizeof((secdbg_log->last_pet)), last_pet_paddr);
 		sec_debug_summary_add_varmon("last_ns",
-				sizeof((secdbg_log->last_ns)), last_ns_paddr);
+				sizeof((secdbg_log->last_ns.counter)),
+				last_ns_paddr);
 	} else
 		pr_emerg("**** secdbg_log or secdbg_paddr is not initialized ****\n");
 
@@ -323,9 +305,6 @@ static int __init summary_init_sched_log(struct sec_debug_summary_data_apss *p)
 {
 	if (!secdbg_paddr)
 		return -ENOMEM;
-
-	//temp
-	pr_warn("%s: secdbg_paddr[0x%x]\n",__func__,(unsigned int)secdbg_paddr);
 
 	p->sched_log.sched_idx_paddr = secdbg_paddr +
 		offsetof(struct sec_debug_log, idx_sched);
@@ -381,21 +360,6 @@ static unsigned long get_wdog_regsave_paddr(void)
 {
 	return __pa(&cpu_buf_paddr);
 }
-unsigned int get_last_pet_paddr(void)
-{
-#if 0 // MUST BE CHECK
-	return virt_to_phys(&wdog_dd->last_pet);
-#else
-	return 0;
-#endif
-}
-
-void sec_debug_summary_set_core_reg_info(struct sec_debug_summary_data_apss *apss)
-{
-	int i;
-	for(i = 0; i < CONFIG_NR_CPUS; i++)
-		apss->cpu_reg.sec_debug_core_reg_offset[i] = (uint64_t)(virt_to_phys(&per_cpu(sec_debug_core_reg, i)) - virt_to_phys(&sec_debug_core_reg));
-}
 
 void sec_debug_summary_bark_dump(unsigned long cpu_data,
 		unsigned long pcpu_data, unsigned long cpu_buf,
@@ -429,11 +393,9 @@ static int __init summary_init_core_reg(struct sec_debug_summary_data_apss *p)
 	/* setup sec debug core reg info */
 	p->cpu_reg.sec_debug_core_reg_paddr = virt_to_phys(&sec_debug_core_reg);
 
-	pr_info("sec_debug_core_reg_paddr = 0x%llx\n",
-				p->cpu_reg.sec_debug_core_reg_paddr);
+	pr_info("sec_debug_core_reg_paddr = 0x%llx\n", p->cpu_reg.sec_debug_core_reg_paddr);
 
-	sec_debug_summary_set_core_reg_info(p);
-#ifdef CONFIG_QCOM_MEMORY_DUMP_V2
+#ifdef CONFIG_MSM_MEMORY_DUMP_V2
 	/* setup qc core reg info */
 	sec_debug_summary_set_msm_dump_info(p);
 #endif
@@ -464,123 +426,23 @@ static int __init summary_init_avc_log(struct sec_debug_summary_data_apss *p)
 	return 0;
 }
 
-int sec_debug_is_modem_separate_debug_ssr(void)
+int sec_debug_is_modem_seperate_debug_ssr(void)
 {
-	return secdbg_summary->priv.modem.separate_debug;
-}
-
-#define SET_MEMBER_TYPE_INFO(PTR, TYPE, MEMBER) \
-	{ \
-		(PTR)->size = sizeof(((TYPE *)0)->MEMBER); \
-		(PTR)->offset = offsetof(TYPE, MEMBER); \
-	}
-
-int summary_set_task_info(struct sec_debug_summary_data_apss *apss)
-{
-	extern struct task_struct init_task;
-
-	apss->task.stack_size = THREAD_SIZE;
-	apss->task.start_sp = THREAD_SIZE;
-#ifdef CONFIG_VMAP_STACK
-	apss->task.irq_stack.pcpu_stack = (uint64_t)&irq_stack_ptr;
-#else
-	apss->task.irq_stack.pcpu_stack = (uint64_t)&irq_stack;
-#endif
-	apss->task.irq_stack.size = IRQ_STACK_SIZE;
-	apss->task.irq_stack.start_sp = IRQ_STACK_SIZE;
-
-	apss->task.ti.struct_size = sizeof(struct thread_info);
-	SET_MEMBER_TYPE_INFO(&apss->task.ti.flags, struct thread_info, flags);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.cpu, struct task_struct, cpu);
-#ifdef CONFIG_RKP_CFP_ROPP
-	SET_MEMBER_TYPE_INFO(&apss->task.ti.rrk, struct thread_info, rrk);
-#endif
-
-	apss->task.ts.struct_size = sizeof(struct task_struct);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.state, struct task_struct, state);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.exit_state, struct task_struct,
-					exit_state);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.stack, struct task_struct, stack);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.flags, struct task_struct, flags);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.on_cpu, struct task_struct, on_cpu);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.pid, struct task_struct, pid);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.comm, struct task_struct, comm);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.tasks_next, struct task_struct,
-					tasks.next);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.thread_group_next,
-					struct task_struct, thread_group.next);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.fp, struct task_struct,
-					thread.cpu_context.fp);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.sp, struct task_struct,
-					thread.cpu_context.sp);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.pc, struct task_struct,
-					thread.cpu_context.pc);
-
-#ifdef CONFIG_SCHED_INFO
-	/* sched_info */
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.sched_info__pcount,
-					struct task_struct, sched_info.pcount);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.sched_info__run_delay,
-					struct task_struct,
-					sched_info.run_delay);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.sched_info__last_arrival,
-					struct task_struct,
-					sched_info.last_arrival);
-	SET_MEMBER_TYPE_INFO(&apss->task.ts.sched_info__last_queued,
-					struct task_struct,
-					sched_info.last_queued);
-#endif
-
-	apss->task.init_task = (uint64_t)&init_task;
-#ifdef CONFIG_RKP_CFP_ROPP
-	apss->task.ropp.magic = 0x50504F52;
-#else
-	apss->task.ropp.magic = 0x0;
-#endif
-
-	return 0;
-}
-
-#ifdef CONFIG_MSM_PM
-void summary_set_lpm_info_cci(uint64_t paddr)
-{
-	if (secdbg_apss) {
-		pr_info("%s : 0x%llx\n", __func__, paddr);
-		secdbg_apss->aplpm.p_cci = paddr;
-	}
-}
-#else
-void summary_set_lpm_info_cci(uint64_t phy_addr)
-{
-}
-#endif
-
-void * sec_debug_summary_get_modem(void)
-{
-	if (secdbg_summary) {
-		return (void *)&secdbg_summary->priv.modem;
-	} else {
-		pr_info("%s : secdbg_summary is null.\n", __func__);
-		return NULL;
-	}
+	return secdbg_summary->priv.modem.seperate_debug;
 }
 
 int __init sec_debug_summary_init(void)
 {
-#ifdef CONFIG_SEC_DEBUG_VERBOSE_SUMMARY_HTML
-	short i;
-#endif
-	size_t size = sizeof(struct sec_debug_summary);
-
-	pr_info("SMEM_ID_VENDOR2=0x%x size=0x%lx\n",
-		(unsigned int)SMEM_ID_VENDOR2, size);
+	pr_info("%s: SMEM_ID_VENDOR0=0x%x size=0x%zx\n",
+		__func__,  (unsigned int)SMEM_ID_VENDOR2,
+		sizeof(struct sec_debug_summary));
 
 	/* set summary address in smem for other subsystems to see */
 	secdbg_summary = (struct sec_debug_summary *)smem_alloc(
-			SMEM_ID_VENDOR2,
-			sizeof(struct sec_debug_summary),
-			0,
-			SMEM_ANY_HOST_FLAG);
+		SMEM_ID_VENDOR2,
+		sizeof(struct sec_debug_summary),
+		0,
+		SMEM_ANY_HOST_FLAG);
 
 	if (secdbg_summary == NULL) {
 		pr_info("%s: smem alloc failed!\n", __func__);
@@ -603,7 +465,7 @@ int __init sec_debug_summary_init(void)
 	secdbg_summary->dsps = (struct sec_debug_summary_data *)
 		(smem_virt_to_phys(&secdbg_summary->priv.dsps)&0xFFFFFFFF);
 
-	pr_info("apss(%lx) rpm(%lx) modem(%lx) dsps(%lx)\n",
+	pr_info("%s: apss(%lx) rpm(%lx) modem(%lx) dsps(%lx)\n", __func__,
 		(unsigned long)secdbg_summary->apss,
 		(unsigned long)secdbg_summary->rpm,
 		(unsigned long)secdbg_summary->modem,
@@ -613,12 +475,11 @@ int __init sec_debug_summary_init(void)
 	strlcpy(secdbg_apss->name, "APSS", sizeof(secdbg_apss->name) + 1);
 	strlcpy(secdbg_apss->state, "Init", sizeof(secdbg_apss->state) + 1);
 	secdbg_apss->nr_cpus = CONFIG_NR_CPUS;
-	secdbg_apss->dump_sink_paddr = get_pa_dump_sink();
 
 	sec_debug_summary_set_kloginfo(&secdbg_apss->log.first_idx_paddr,
 		&secdbg_apss->log.next_idx_paddr,
-		&secdbg_apss->log.log_paddr, &secdbg_apss->log.size_paddr);
-
+		&secdbg_apss->log.log_paddr, &secdbg_apss->log.size);
+	sec_debug_summary_set_logger_info(&secdbg_apss->logger_log);
 	secdbg_apss->tz_core_dump =
 		(struct msm_dump_data **)get_wdog_regsave_paddr();
 
@@ -636,16 +497,9 @@ int __init sec_debug_summary_init(void)
 
 	_set_kconst(secdbg_apss);
 
-#ifdef CONFIG_QCOM_RTB
+#ifdef CONFIG_MSM_RTB
 	sec_debug_summary_set_rtb_info(secdbg_apss);
 #endif
-
-	summary_set_task_info(secdbg_apss);
-
-	summary_set_lpm_info_cluster(secdbg_apss);
-	summary_set_lpm_info_runqueues(secdbg_apss);
-
-	summary_set_msm_memdump_info(secdbg_apss);
 
 	/* fill magic nubmer last to ensure data integrity when the magic
 	 * numbers are written

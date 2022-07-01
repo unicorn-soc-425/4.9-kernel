@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -16,6 +16,8 @@
 #include "main.h"
 #include "debug.h"
 #include "pci.h"
+
+#define CNSS_IPC_LOG_PAGES		32
 
 void *cnss_ipc_log_context;
 
@@ -137,18 +139,10 @@ static ssize_t cnss_dev_boot_debug_write(struct file *fp,
 {
 	struct cnss_plat_data *plat_priv =
 		((struct seq_file *)fp->private_data)->private;
-	struct cnss_pci_data *pci_priv;
 	char buf[64];
 	char *cmd;
 	unsigned int len = 0;
 	int ret = 0;
-
-	if (!plat_priv)
-		return -ENODEV;
-
-	pci_priv = plat_priv->bus_priv;
-	if (!pci_priv)
-		return -ENODEV;
 
 	len = min(count, sizeof(buf) - 1);
 	if (copy_from_user(buf, user_buf, len))
@@ -165,23 +159,21 @@ static ssize_t cnss_dev_boot_debug_write(struct file *fp,
 		ret = cnss_pci_init(plat_priv);
 	} else if (sysfs_streq(cmd, "download")) {
 		set_bit(CNSS_DRIVER_DEBUG, &plat_priv->driver_state);
-		ret = cnss_pci_start_mhi(pci_priv);
+		ret = cnss_pci_start_mhi(plat_priv->bus_priv);
 	} else if (sysfs_streq(cmd, "linkup")) {
-		ret = cnss_resume_pci_link(pci_priv);
+		ret = cnss_resume_pci_link(plat_priv->bus_priv);
 	} else if (sysfs_streq(cmd, "linkdown")) {
-		ret = cnss_suspend_pci_link(pci_priv);
+		ret = cnss_suspend_pci_link(plat_priv->bus_priv);
 	} else if (sysfs_streq(cmd, "powerup")) {
 		set_bit(CNSS_DRIVER_DEBUG, &plat_priv->driver_state);
 		ret = cnss_driver_event_post(plat_priv,
 					     CNSS_DRIVER_EVENT_POWER_UP,
-					     CNSS_EVENT_SYNC, NULL);
+					     true, NULL);
 	} else if (sysfs_streq(cmd, "shutdown")) {
 		ret = cnss_driver_event_post(plat_priv,
 					     CNSS_DRIVER_EVENT_POWER_DOWN,
-					     0, NULL);
+					     true, NULL);
 		clear_bit(CNSS_DRIVER_DEBUG, &plat_priv->driver_state);
-	} else if (sysfs_streq(cmd, "assert")) {
-		ret = cnss_force_fw_assert(&pci_priv->pci_dev->dev);
 	} else {
 		cnss_pr_err("Device boot debugfs command is invalid\n");
 		ret = -EINVAL;
@@ -205,7 +197,6 @@ static int cnss_dev_boot_debug_show(struct seq_file *s, void *data)
 	seq_puts(s, "linkdown: bring down PCIe link\n");
 	seq_puts(s, "powerup: full power on sequence to boot device, download FW and do QMI handshake with FW\n");
 	seq_puts(s, "shutdown: full power off sequence to shutdown device\n");
-	seq_puts(s, "assert: trigger firmware assert\n");
 
 	return 0;
 }
@@ -224,286 +215,6 @@ static const struct file_operations cnss_dev_boot_debug_fops = {
 	.llseek		= seq_lseek,
 };
 
-static int cnss_reg_read_debug_show(struct seq_file *s, void *data)
-{
-	struct cnss_plat_data *plat_priv = s->private;
-
-	mutex_lock(&plat_priv->dev_lock);
-	if (!plat_priv->diag_reg_read_buf) {
-		seq_puts(s, "\nUsage: echo <mem_type> <offset> <data_len> > <debugfs_path>/cnss/reg_read\n");
-		mutex_unlock(&plat_priv->dev_lock);
-		return 0;
-	}
-
-	seq_printf(s, "\nRegister read, address: 0x%x memory type: 0x%x length: 0x%x\n\n",
-		   plat_priv->diag_reg_read_addr,
-		   plat_priv->diag_reg_read_mem_type,
-		   plat_priv->diag_reg_read_len);
-
-	seq_hex_dump(s, "", DUMP_PREFIX_OFFSET, 32, 4,
-		     plat_priv->diag_reg_read_buf,
-		     plat_priv->diag_reg_read_len, false);
-
-	plat_priv->diag_reg_read_len = 0;
-	kfree(plat_priv->diag_reg_read_buf);
-	plat_priv->diag_reg_read_buf = NULL;
-	mutex_unlock(&plat_priv->dev_lock);
-
-	return 0;
-}
-
-static ssize_t cnss_reg_read_debug_write(struct file *fp,
-					 const char __user *user_buf,
-					 size_t count, loff_t *off)
-{
-	struct cnss_plat_data *plat_priv =
-		((struct seq_file *)fp->private_data)->private;
-	char buf[64];
-	char *sptr, *token;
-	unsigned int len = 0;
-	u32 reg_offset, mem_type;
-	u32 data_len = 0;
-	u8 *reg_buf = NULL;
-	const char *delim = " ";
-	int ret = 0;
-
-	if (!test_bit(CNSS_FW_READY, &plat_priv->driver_state)) {
-		cnss_pr_err("Firmware is not ready yet\n");
-		return -EINVAL;
-	}
-
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	sptr = buf;
-
-	token = strsep(&sptr, delim);
-	if (!token)
-		return -EINVAL;
-
-	if (!sptr)
-		return -EINVAL;
-
-	if (kstrtou32(token, 0, &mem_type))
-		return -EINVAL;
-
-	token = strsep(&sptr, delim);
-	if (!token)
-		return -EINVAL;
-
-	if (!sptr)
-		return -EINVAL;
-
-	if (kstrtou32(token, 0, &reg_offset))
-		return -EINVAL;
-
-	token = strsep(&sptr, delim);
-	if (!token)
-		return -EINVAL;
-
-	if (kstrtou32(token, 0, &data_len))
-		return -EINVAL;
-
-	mutex_lock(&plat_priv->dev_lock);
-	kfree(plat_priv->diag_reg_read_buf);
-	plat_priv->diag_reg_read_buf = NULL;
-
-	reg_buf = kzalloc(data_len, GFP_KERNEL);
-	if (!reg_buf) {
-		mutex_unlock(&plat_priv->dev_lock);
-		return -ENOMEM;
-	}
-
-	ret = cnss_wlfw_athdiag_read_send_sync(plat_priv, reg_offset,
-					       mem_type, data_len,
-					       reg_buf);
-	if (ret) {
-		kfree(reg_buf);
-		mutex_unlock(&plat_priv->dev_lock);
-		return ret;
-	}
-
-	plat_priv->diag_reg_read_addr = reg_offset;
-	plat_priv->diag_reg_read_mem_type = mem_type;
-	plat_priv->diag_reg_read_len = data_len;
-	plat_priv->diag_reg_read_buf = reg_buf;
-	mutex_unlock(&plat_priv->dev_lock);
-
-	return count;
-}
-
-static int cnss_reg_read_debug_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, cnss_reg_read_debug_show, inode->i_private);
-}
-
-static const struct file_operations cnss_reg_read_debug_fops = {
-	.read		= seq_read,
-	.write		= cnss_reg_read_debug_write,
-	.open		= cnss_reg_read_debug_open,
-	.owner		= THIS_MODULE,
-	.llseek		= seq_lseek,
-};
-
-static int cnss_reg_write_debug_show(struct seq_file *s, void *data)
-{
-	seq_puts(s, "\nUsage: echo <mem_type> <offset> <reg_val> > <debugfs_path>/cnss/reg_write\n");
-
-	return 0;
-}
-
-static ssize_t cnss_reg_write_debug_write(struct file *fp,
-					  const char __user *user_buf,
-					  size_t count, loff_t *off)
-{
-	struct cnss_plat_data *plat_priv =
-		((struct seq_file *)fp->private_data)->private;
-	char buf[64];
-	char *sptr, *token;
-	unsigned int len = 0;
-	u32 reg_offset, mem_type, reg_val;
-	const char *delim = " ";
-	int ret = 0;
-
-	if (!test_bit(CNSS_FW_READY, &plat_priv->driver_state)) {
-		cnss_pr_err("Firmware is not ready yet\n");
-		return -EINVAL;
-	}
-
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	sptr = buf;
-
-	token = strsep(&sptr, delim);
-	if (!token)
-		return -EINVAL;
-
-	if (!sptr)
-		return -EINVAL;
-
-	if (kstrtou32(token, 0, &mem_type))
-		return -EINVAL;
-
-	token = strsep(&sptr, delim);
-	if (!token)
-		return -EINVAL;
-
-	if (!sptr)
-		return -EINVAL;
-
-	if (kstrtou32(token, 0, &reg_offset))
-		return -EINVAL;
-
-	token = strsep(&sptr, delim);
-	if (!token)
-		return -EINVAL;
-
-	if (kstrtou32(token, 0, &reg_val))
-		return -EINVAL;
-
-	ret = cnss_wlfw_athdiag_write_send_sync(plat_priv, reg_offset, mem_type,
-						sizeof(u32),
-						(u8 *)&reg_val);
-	if (ret)
-		return ret;
-
-	return count;
-}
-
-static int cnss_reg_write_debug_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, cnss_reg_write_debug_show, inode->i_private);
-}
-
-static const struct file_operations cnss_reg_write_debug_fops = {
-	.read		= seq_read,
-	.write		= cnss_reg_write_debug_write,
-	.open		= cnss_reg_write_debug_open,
-	.owner		= THIS_MODULE,
-	.llseek		= seq_lseek,
-};
-
-static ssize_t cnss_runtime_pm_debug_write(struct file *fp,
-					   const char __user *user_buf,
-					   size_t count, loff_t *off)
-{
-	struct cnss_plat_data *plat_priv =
-		((struct seq_file *)fp->private_data)->private;
-	struct cnss_pci_data *pci_priv;
-	char buf[64];
-	char *cmd;
-	unsigned int len = 0;
-	int ret = 0;
-
-	if (!plat_priv)
-		return -ENODEV;
-
-	pci_priv = plat_priv->bus_priv;
-	if (!pci_priv)
-		return -ENODEV;
-
-	len = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, user_buf, len))
-		return -EFAULT;
-
-	buf[len] = '\0';
-	cmd = buf;
-
-	if (sysfs_streq(cmd, "usage_count")) {
-		cnss_pci_pm_runtime_show_usage_count(pci_priv);
-	} else if (sysfs_streq(cmd, "get")) {
-		ret = cnss_pci_pm_runtime_get(pci_priv);
-	} else if (sysfs_streq(cmd, "get_noresume")) {
-		cnss_pci_pm_runtime_get_noresume(pci_priv);
-	} else if (sysfs_streq(cmd, "put_autosuspend")) {
-		ret = cnss_pci_pm_runtime_put_autosuspend(pci_priv);
-	} else if (sysfs_streq(cmd, "put_noidle")) {
-		cnss_pci_pm_runtime_put_noidle(pci_priv);
-	} else if (sysfs_streq(cmd, "mark_last_busy")) {
-		cnss_pci_pm_runtime_mark_last_busy(pci_priv);
-	} else {
-		cnss_pr_err("Runtime PM debugfs command is invalid\n");
-		ret = -EINVAL;
-	}
-
-	if (ret)
-		return ret;
-
-	return count;
-}
-
-static int cnss_runtime_pm_debug_show(struct seq_file *s, void *data)
-{
-	seq_puts(s, "\nUsage: echo <action> > <debugfs_path>/cnss/runtime_pm\n");
-	seq_puts(s, "<action> can be one of below:\n");
-	seq_puts(s, "usage_count: get runtime PM usage count\n");
-	seq_puts(s, "get: do runtime PM get\n");
-	seq_puts(s, "get_noresume: do runtime PM get noresume\n");
-	seq_puts(s, "put_noidle: do runtime PM put noidle\n");
-	seq_puts(s, "put_autosuspend: do runtime PM put autosuspend\n");
-	seq_puts(s, "mark_last_busy: do runtime PM mark last busy\n");
-
-	return 0;
-}
-
-static int cnss_runtime_pm_debug_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, cnss_runtime_pm_debug_show, inode->i_private);
-}
-
-static const struct file_operations cnss_runtime_pm_debug_fops = {
-	.read		= seq_read,
-	.write		= cnss_runtime_pm_debug_write,
-	.open		= cnss_runtime_pm_debug_open,
-	.owner		= THIS_MODULE,
-	.llseek		= seq_lseek,
-};
-
 #ifdef CONFIG_CNSS2_DEBUG
 static int cnss_create_debug_only_node(struct cnss_plat_data *plat_priv)
 {
@@ -511,12 +222,6 @@ static int cnss_create_debug_only_node(struct cnss_plat_data *plat_priv)
 
 	debugfs_create_file("dev_boot", 0600, root_dentry, plat_priv,
 			    &cnss_dev_boot_debug_fops);
-	debugfs_create_file("reg_read", 0600, root_dentry, plat_priv,
-			    &cnss_reg_read_debug_fops);
-	debugfs_create_file("reg_write", 0600, root_dentry, plat_priv,
-			    &cnss_reg_write_debug_fops);
-	debugfs_create_file("runtime_pm", 0600, root_dentry, plat_priv,
-			    &cnss_runtime_pm_debug_fops);
 
 	return 0;
 }

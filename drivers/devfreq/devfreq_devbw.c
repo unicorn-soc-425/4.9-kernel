@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014, 2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -45,6 +45,7 @@ struct dev_data {
 	int cur_ab;
 	int cur_ib;
 	long gov_ab;
+	unsigned int ab_percent;
 	struct devfreq *df;
 	struct devfreq_dev_profile dp;
 };
@@ -78,6 +79,11 @@ static int set_bw(struct device *dev, int new_ib, int new_ab)
 	return ret;
 }
 
+static unsigned int find_ab(struct dev_data *d, unsigned long *freq)
+{
+	return (d->ab_percent * (*freq)) / 100;
+}
+
 static void find_freq(struct devfreq_dev_profile *p, unsigned long *freq,
 			u32 flags)
 {
@@ -105,7 +111,11 @@ static int devbw_target(struct device *dev, unsigned long *freq, u32 flags)
 	struct dev_data *d = dev_get_drvdata(dev);
 
 	find_freq(&d->dp, freq, flags);
-	return set_bw(dev, *freq, d->gov_ab);
+
+	if (!d->gov_ab)
+		return set_bw(dev, *freq, find_ab(d, freq));
+	else
+		return set_bw(dev, *freq, d->gov_ab);
 }
 
 static int devbw_get_dev_status(struct device *dev,
@@ -119,6 +129,7 @@ static int devbw_get_dev_status(struct device *dev,
 
 #define PROP_PORTS "qcom,src-dst-ports"
 #define PROP_TBL "qcom,bw-tbl"
+#define PROP_AB_PER "qcom,ab-percent"
 #define PROP_ACTIVE "qcom,active-only"
 
 int devfreq_add_devbw(struct device *dev)
@@ -196,6 +207,15 @@ int devfreq_add_devbw(struct device *dev)
 		p->max_state = len;
 	}
 
+	if (of_find_property(dev->of_node, PROP_AB_PER, &len)) {
+		ret = of_property_read_u32(dev->of_node, PROP_AB_PER,
+							&d->ab_percent);
+		if (ret)
+			return ret;
+
+		dev_dbg(dev, "ab-percent used %u\n", d->ab_percent);
+	}
+
 	d->bus_client = msm_bus_scale_register_client(&d->bw_data);
 	if (!d->bus_client) {
 		dev_err(dev, "Unable to register bus client\n");
@@ -217,7 +237,6 @@ int devfreq_add_devbw(struct device *dev)
 int devfreq_remove_devbw(struct device *dev)
 {
 	struct dev_data *d = dev_get_drvdata(dev);
-
 	msm_bus_scale_unregister_client(d->bus_client);
 	devfreq_remove_device(d->df);
 	return 0;
@@ -226,14 +245,12 @@ int devfreq_remove_devbw(struct device *dev)
 int devfreq_suspend_devbw(struct device *dev)
 {
 	struct dev_data *d = dev_get_drvdata(dev);
-
 	return devfreq_suspend_device(d->df);
 }
 
 int devfreq_resume_devbw(struct device *dev)
 {
 	struct dev_data *d = dev_get_drvdata(dev);
-
 	return devfreq_resume_device(d->df);
 }
 
@@ -247,7 +264,7 @@ static int devfreq_devbw_remove(struct platform_device *pdev)
 	return devfreq_remove_devbw(&pdev->dev);
 }
 
-static const struct of_device_id devbw_match_table[] = {
+static struct of_device_id match_table[] = {
 	{ .compatible = "qcom,devbw" },
 	{}
 };
@@ -257,11 +274,17 @@ static struct platform_driver devbw_driver = {
 	.remove = devfreq_devbw_remove,
 	.driver = {
 		.name = "devbw",
-		.of_match_table = devbw_match_table,
-		.suppress_bind_attrs = true,
+		.of_match_table = match_table,
+		.owner = THIS_MODULE,
 	},
 };
 
-module_platform_driver(devbw_driver);
+static int __init devbw_init(void)
+{
+	platform_driver_register(&devbw_driver);
+	return 0;
+}
+device_initcall(devbw_init);
+
 MODULE_DESCRIPTION("Device DDR bandwidth voting driver MSM SoCs");
 MODULE_LICENSE("GPL v2");

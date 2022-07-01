@@ -198,7 +198,7 @@ ppp_asynctty_open(struct tty_struct *tty)
 		goto out_free;
 
 	tty->disc_data = ap;
-	tty->receive_room = 65536;
+	tty->receive_room = 131072;
 	return 0;
 
  out_free:
@@ -356,7 +356,8 @@ ppp_asynctty_receive(struct tty_struct *tty, const unsigned char *buf,
 	if (!skb_queue_empty(&ap->rqueue))
 		tasklet_schedule(&ap->tsk);
 	ap_put(ap);
-	tty_unthrottle(tty);
+	if (tty->port && !tty->port->low_latency)
+		tty_unthrottle(tty);
 }
 
 static void
@@ -770,7 +771,7 @@ process_input_packet(struct asyncppp *ap)
 {
 	struct sk_buff *skb;
 	unsigned char *p;
-	unsigned int len, fcs;
+	unsigned int len, fcs, proto;
 
 	skb = ap->rpkt;
 	if (ap->state & (SC_TOSS | SC_ESCAPE))
@@ -799,14 +800,14 @@ process_input_packet(struct asyncppp *ap)
 			goto err;
 		p = skb_pull(skb, 2);
 	}
-
-	/* If protocol field is not compressed, it can be LCP packet */
-	if (!(p[0] & 0x01)) {
-		unsigned int proto;
-
+	proto = p[0];
+	if (proto & 1) {
+		/* protocol is compressed */
+		skb_push(skb, 1)[0] = 0;
+	} else {
 		if (skb->len < 2)
 			goto err;
-		proto = (p[0] << 8) + p[1];
+		proto = (proto << 8) + p[1];
 		if (proto == PPP_LCP)
 			async_lcp_peek(ap, p, skb->len, 1);
 	}

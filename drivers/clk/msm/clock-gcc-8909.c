@@ -1,5 +1,4 @@
-/*
- * Copyright (c) 2014-2016, 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -10,7 +9,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
-
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/err.h>
@@ -34,7 +32,6 @@
 #include <dt-bindings/clock/msm-clocks-8909.h>
 
 #include "clock.h"
-#include "reset.h"
 
 enum {
 	GCC_BASE,
@@ -2560,12 +2557,6 @@ static struct clk_lookup msm_clocks_lookup[] = {
 	CLK_LIST(gcc_snoc_qosgen_clk),
 };
 
-static const struct msm_reset_map gcc_8909_resets[] = {
-	[GCC_USB_HS_BCR] = {0x41000},
-	[GCC_USB2_HS_PHY_ONLY_BCR] = {0x41034},
-	[GCC_QUSB2_PHY_BCR] = {0x4103C},
-};
-
 static int add_dev_opp(struct clk *c, struct device *dev,
 				unsigned long max_rate)
 {
@@ -2625,11 +2616,6 @@ static void gcc_gfx3d_fmax(struct platform_device *pdev)
 	u32 pte_efuse, bin, shift = 2, mask = 0x7;
 
 	base = devm_ioremap(&pdev->dev, 0x0005c00c, 0x8);
-	if (IS_ERR(base)) {
-		pr_err("Failed to map raw base address\n");
-		return;
-	}
-
 	pte_efuse = readl_relaxed(base);
 	devm_iounmap(&pdev->dev, base);
 	bin = (pte_efuse >> shift) & mask;
@@ -2754,16 +2740,12 @@ static int msm_gcc_probe(struct platform_device *pdev)
 					"qcom,dev-opp-list", node);
 	}
 
-	msm_reset_controller_register(pdev, gcc_8909_resets,
-					ARRAY_SIZE(gcc_8909_resets),
-					virt_bases[GCC_BASE]);
-
 	dev_info(&pdev->dev, "Registered GCC clocks\n");
 
 	return 0;
 }
 
-static const struct of_device_id msm_clock_gcc_match_table[] = {
+static struct of_device_id msm_clock_gcc_match_table[] = {
 	{ .compatible = "qcom,gcc-8909" },
 	{},
 };
@@ -2833,7 +2815,7 @@ static int msm_clock_debug_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static const struct of_device_id msm_clock_debug_match_table[] = {
+static struct of_device_id msm_clock_debug_match_table[] = {
 	{ .compatible = "qcom,cc-debug-8909" },
 	{}
 };
@@ -2865,9 +2847,9 @@ static int msm_gcc_mdss_probe(struct platform_device *pdev)
 {
 	int counter = 0, ret = 0;
 
-	pclk0_clk_src.c.parent = devm_clk_get(&pdev->dev, "pclk0_src");
+	pclk0_clk_src.c.parent = devm_clk_get(&pdev->dev, "pixel_src");
 	if (IS_ERR(pclk0_clk_src.c.parent)) {
-		dev_err(&pdev->dev, "Failed to get pclk0 source.\n");
+		dev_err(&pdev->dev, "Failed to get pixel source.\n");
 		return PTR_ERR(pclk0_clk_src.c.parent);
 	}
 
@@ -2876,7 +2858,7 @@ static int msm_gcc_mdss_probe(struct platform_device *pdev)
 		ftbl_gcc_mdss_pclk0_clk[counter].src_clk =
 					pclk0_clk_src.c.parent;
 
-	byte0_clk_src.c.parent = devm_clk_get(&pdev->dev, "byte0_src");
+	byte0_clk_src.c.parent = devm_clk_get(&pdev->dev, "byte_src");
 	if (IS_ERR(byte0_clk_src.c.parent)) {
 		dev_err(&pdev->dev, "Failed to get byte0 source.\n");
 		devm_clk_put(&pdev->dev, pclk0_clk_src.c.parent);
@@ -2898,7 +2880,7 @@ static int msm_gcc_mdss_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static const struct of_device_id msm_clock_mdss_match_table[] = {
+static struct of_device_id msm_clock_mdss_match_table[] = {
 	{ .compatible = "qcom,gcc-mdss-8909" },
 	{}
 };

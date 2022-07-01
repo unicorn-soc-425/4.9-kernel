@@ -225,14 +225,13 @@ static void uart_clps711x_break_ctl(struct uart_port *port, int break_state)
 	writel(ubrlcr, port->membase + UBRLCR_OFFSET);
 }
 
-static void uart_clps711x_set_ldisc(struct uart_port *port,
-				    struct ktermios *termios)
+static void uart_clps711x_set_ldisc(struct uart_port *port, int ld)
 {
 	if (!port->line) {
 		struct clps711x_port *s = dev_get_drvdata(port->dev);
 
 		regmap_update_bits(s->syscon, SYSCON_OFFSET, SYSCON1_SIREN,
-				   (termios->c_line == N_IRDA) ? SYSCON1_SIREN : 0);
+				   (ld == N_IRDA) ? SYSCON1_SIREN : 0);
 	}
 }
 
@@ -450,7 +449,6 @@ static int uart_clps711x_probe(struct platform_device *pdev)
 	struct clps711x_port *s;
 	struct resource *res;
 	struct clk *uart_clk;
-	int irq;
 
 	if (index < 0 || index >= UART_CLPS711X_NR)
 		return -EINVAL;
@@ -468,13 +466,12 @@ static int uart_clps711x_probe(struct platform_device *pdev)
 	if (IS_ERR(s->port.membase))
 		return PTR_ERR(s->port.membase);
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
-	s->port.irq = irq;
+	s->port.irq = platform_get_irq(pdev, 0);
+	if (IS_ERR_VALUE(s->port.irq))
+		return s->port.irq;
 
 	s->rx_irq = platform_get_irq(pdev, 1);
-	if (s->rx_irq < 0)
+	if (IS_ERR_VALUE(s->rx_irq))
 		return s->rx_irq;
 
 	if (!np) {
@@ -502,9 +499,7 @@ static int uart_clps711x_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, s);
 
-	s->gpios = mctrl_gpio_init_noauto(&pdev->dev, 0);
-	if (IS_ERR(s->gpios))
-	    return PTR_ERR(s->gpios);
+	s->gpios = mctrl_gpio_init(&pdev->dev, 0);
 
 	ret = uart_add_one_port(&clps711x_uart, &s->port);
 	if (ret)
@@ -539,7 +534,7 @@ static int uart_clps711x_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id __maybe_unused clps711x_uart_dt_ids[] = {
-	{ .compatible = "cirrus,ep7209-uart", },
+	{ .compatible = "cirrus,clps711x-uart", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, clps711x_uart_dt_ids);
@@ -547,6 +542,7 @@ MODULE_DEVICE_TABLE(of, clps711x_uart_dt_ids);
 static struct platform_driver clps711x_uart_platform = {
 	.driver = {
 		.name		= "clps711x-uart",
+		.owner		= THIS_MODULE,
 		.of_match_table	= of_match_ptr(clps711x_uart_dt_ids),
 	},
 	.probe	= uart_clps711x_probe,

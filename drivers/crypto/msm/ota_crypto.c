@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2014,2017 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -11,7 +11,7 @@
  *
  */
 
-/* QTI Over the Air (OTA) Crypto driver */
+/* Qualcomm Over the Air (OTA) Crypto driver */
 
 #include <linux/types.h>
 #include <linux/platform_device.h>
@@ -72,7 +72,7 @@ struct ota_dev_control {
 	/* misc device */
 	struct miscdevice miscdevice;
 	struct list_head ready_commands;
-	unsigned int magic;
+	unsigned magic;
 	struct list_head qce_dev;
 	spinlock_t lock;
 	struct mutex register_lock;
@@ -99,7 +99,7 @@ struct ota_qce_dev {
 #define OTA_MAGIC 0x4f544143
 
 static long qcota_ioctl(struct file *file,
-			  unsigned int cmd, unsigned long arg);
+			  unsigned cmd, unsigned long arg);
 static int qcota_open(struct inode *inode, struct file *file);
 static int qcota_release(struct inode *inode, struct file *file);
 static int start_req(struct ota_qce_dev *pqce, struct ota_async_req *areq);
@@ -239,6 +239,10 @@ static void req_done(unsigned long data)
 		if (!list_empty(&podev->ready_commands)) {
 			new_req = container_of(podev->ready_commands.next,
 						struct ota_async_req, rlist);
+			if (NULL == new_req) {
+				pr_err("ota_crypto: req_done, new_req = NULL");
+				return;
+			}
 			list_del(&new_req->rlist);
 			pqce->active_command = new_req;
 			spin_unlock_irqrestore(&podev->lock, flags);
@@ -263,6 +267,7 @@ static void req_done(unsigned long data)
 	}
 	if (areq)
 		complete(&areq->complete);
+	return;
 }
 
 static void f9_cb(void *cookie, unsigned char *icv, unsigned char *iv,
@@ -425,7 +430,7 @@ static int submit_req(struct ota_async_req *areq, struct ota_dev_control *podev)
 }
 
 static long qcota_ioctl(struct file *file,
-			  unsigned int cmd, unsigned long arg)
+			  unsigned cmd, unsigned long arg)
 {
 	int err = 0;
 	struct ota_dev_control *podev;
@@ -774,7 +779,7 @@ ret:
 	return 0;
 }
 
-static const struct of_device_id qcota_match[] = {
+static struct of_device_id qcota_match[] = {
 	{	.compatible = "qcom,qcota",
 	},
 	{}
@@ -800,7 +805,7 @@ static int _disp_stats(void)
 
 	pstat = &_qcota_stat;
 	len = scnprintf(_debug_read_buf, DEBUG_MAX_RW_BUF - 1,
-			"\nQTI OTA crypto accelerator Statistics:\n");
+			"\nQualcomm OTA crypto accelerator Statistics:\n");
 
 	len += scnprintf(_debug_read_buf + len, DEBUG_MAX_RW_BUF - len - 1,
 			"   F8 request                      : %llu\n",
@@ -968,7 +973,9 @@ static void __exit qcota_exit(void)
 }
 
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("QTI Ota Crypto driver");
+MODULE_AUTHOR("Rohit Vaswani <rvaswani@codeaurora.org>");
+MODULE_DESCRIPTION("Qualcomm Ota Crypto driver");
+MODULE_VERSION("1.02");
 
 module_init(qcota_init);
 module_exit(qcota_exit);

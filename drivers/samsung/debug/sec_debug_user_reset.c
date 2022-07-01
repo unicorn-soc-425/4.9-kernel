@@ -36,9 +36,6 @@
 #ifdef CONFIG_RKP_CFP_ROPP
 #include <linux/rkp_cfp.h>
 #endif
-#ifdef CONFIG_CFP_ROPP
-#include <linux/cfp.h>
-#endif
 
 #include <linux/qseecom.h>
 #include "sec_debug_internal.h"
@@ -54,7 +51,6 @@ static char rr_str[][3] = {
 	[USER_UPLOAD_CAUSE_BOOTLOADER_REBOOT]	= "BP",
 	[USER_UPLOAD_CAUSE_POWER_ON]		= "NP",
 	[USER_UPLOAD_CAUSE_THERMAL]		= "TP",
-	[USER_UPLOAD_CAUSE_CP_CRASH]		= "CP",
 	[USER_UPLOAD_CAUSE_UNKNOWN]		= "NP",
 };
 
@@ -174,10 +170,6 @@ static void reset_reason_update_and_clear(void)
 	case USER_UPLOAD_CAUSE_THERMAL:
 		p_health->daily_rr.tp++;
 		p_health->rr.tp++;
-		break;
-	case USER_UPLOAD_CAUSE_CP_CRASH:
-		p_health->daily_rr.cp++;
-		p_health->rr.cp++;
 		break;
 	default:
 		p_health->daily_rr.np++;
@@ -944,9 +936,8 @@ static void sec_restore_modem_reset_data(void)
 		return;
 	}
 
-	if ((sec_debug_get_reset_reason() != USER_UPLOAD_CAUSE_PANIC)
-			&& (sec_debug_get_reset_reason() != USER_UPLOAD_CAUSE_CP_CRASH)) {
-		pr_info("it was not kernel panic/cp crash.\n");
+	if (sec_debug_get_reset_reason() != USER_UPLOAD_CAUSE_PANIC) {
+		pr_info("it was not kernel panic.\n");
 		return;
 	}
 
@@ -960,9 +951,8 @@ static void sec_restore_modem_reset_data(void)
 
 void __deprecated sec_debug_summary_modem_print(void)
 {
-	if ((sec_debug_get_reset_reason() != USER_UPLOAD_CAUSE_PANIC)
-			&& (sec_debug_get_reset_reason() != USER_UPLOAD_CAUSE_CP_CRASH)) {
-		pr_info("it was not kernel panic/cp crash.\n");
+	if (sec_debug_get_reset_reason() != USER_UPLOAD_CAUSE_PANIC) {
+		pr_info("it was not kernel panic.\n");
 		return;
 	}
 
@@ -1458,7 +1448,7 @@ void sec_debug_backtrace(void)
 	static int once;
 	struct stackframe frame;
 	int skip_callstack = 0;
-#if defined (CONFIG_CFP_ROPP) || defined(CONFIG_RKP_CFP_ROPP)
+#ifdef CONFIG_RKP_CFP_ROPP
 	unsigned long where = 0x0;
 #endif
 
@@ -1476,7 +1466,7 @@ void sec_debug_backtrace(void)
 				break;
 
 			if (skip_callstack++ > 3) {
-#if defined (CONFIG_CFP_ROPP) || defined(CONFIG_RKP_CFP_ROPP)
+#ifdef CONFIG_RKP_CFP_ROPP
 				where = frame.pc;
 				if (where>>40 != 0xffffff)
 					where = ropp_enable_backtrace(where,

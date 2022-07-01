@@ -541,21 +541,24 @@ static int ecm_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 		if (alt != 0)
 			goto fail;
 
-		VDBG(cdev, "reset ecm control %d\n", intf);
-		usb_ep_disable(ecm->notify);
+		if (ecm->notify->driver_data) {
+			VDBG(cdev, "reset ecm control %d\n", intf);
+			usb_ep_disable(ecm->notify);
+		}
 		if (!(ecm->notify->desc)) {
 			VDBG(cdev, "init ecm ctrl %d\n", intf);
 			if (config_ep_by_speed(cdev->gadget, f, ecm->notify))
 				goto fail;
 		}
 		usb_ep_enable(ecm->notify);
+		ecm->notify->driver_data = ecm;
 
 	/* Data interface has two altsettings, 0 and 1 */
 	} else if (intf == ecm->data_id) {
 		if (alt > 1)
 			goto fail;
 
-		if (ecm->port.in_ep->enabled) {
+		if (ecm->port.in_ep->driver_data) {
 			DBG(cdev, "reset ecm\n");
 			gether_disconnect(&ecm->port);
 		}
@@ -582,8 +585,8 @@ static int ecm_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 			/* Enable zlps by default for ECM conformance;
 			 * override for musb_hdrc (avoids txdma ovhead).
 			 */
-			ecm->port.is_zlp_ok =
-				gadget_is_zlp_supported(cdev->gadget);
+			ecm->port.is_zlp_ok = !(gadget_is_musbhdrc(cdev->gadget)
+				);
 			ecm->port.cdc_filter = DEFAULT_FILTER;
 			DBG(cdev, "activate ecm\n");
 			net = gether_connect(&ecm->port);
@@ -615,7 +618,7 @@ static int ecm_get_alt(struct usb_function *f, unsigned intf)
 
 	if (intf == ecm->ctrl_id)
 		return 0;
-	return ecm->port.in_ep->enabled ? 1 : 0;
+	return ecm->port.in_ep->driver_data ? 1 : 0;
 }
 
 static void ecm_disable(struct usb_function *f)
@@ -625,11 +628,14 @@ static void ecm_disable(struct usb_function *f)
 
 	DBG(cdev, "ecm deactivated\n");
 
-	if (ecm->port.in_ep->enabled)
+	if (ecm->port.in_ep->driver_data)
 		gether_disconnect(&ecm->port);
 
-	usb_ep_disable(ecm->notify);
-	ecm->notify->desc = NULL;
+	if (ecm->notify->driver_data) {
+		usb_ep_disable(ecm->notify);
+		ecm->notify->driver_data = NULL;
+		ecm->notify->desc = NULL;
+	}
 }
 
 /*-------------------------------------------------------------------------*/
@@ -701,36 +707,18 @@ ecm_bind(struct usb_configuration *c, struct usb_function *f)
 	 */
 	if (!ecm_opts->bound) {
 		mutex_lock(&ecm_opts->lock);
-		ecm_opts->net = gether_setup_name_default("ecm");
-		if (IS_ERR(ecm_opts->net)) {
-			status = PTR_ERR(ecm_opts->net);
-			mutex_unlock(&ecm_opts->lock);
-			goto error;
-		}
 		gether_set_gadget(ecm_opts->net, cdev->gadget);
 		status = gether_register_netdev(ecm_opts->net);
 		mutex_unlock(&ecm_opts->lock);
-		if (status) {
-			free_netdev(ecm_opts->net);
-			goto error;
-		}
+		if (status)
+			return status;
 		ecm_opts->bound = true;
 	}
 
-	/* export host's Ethernet address in CDC format */
-	status = gether_get_host_addr_cdc(ecm_opts->net, ecm->ethaddr,
-					  sizeof(ecm->ethaddr));
-	if (status < 12) {
-		status = -EINVAL;
-		goto netdev_cleanup;
-	}
-	ecm->port.ioport = netdev_priv(ecm_opts->net);
 	us = usb_gstrings_attach(cdev, ecm_strings,
 				 ARRAY_SIZE(ecm_string_defs));
-	if (IS_ERR(us)) {
-		status = PTR_ERR(us);
-		goto netdev_cleanup;
-	}
+	if (IS_ERR(us))
+		return PTR_ERR(us);
 	ecm_control_intf.iInterface = us[0].id;
 	ecm_data_intf.iInterface = us[2].id;
 	ecm_desc.iMACAddress = us[1].id;
@@ -739,7 +727,7 @@ ecm_bind(struct usb_configuration *c, struct usb_function *f)
 	/* allocate instance-specific interface IDs */
 	status = usb_interface_id(c, f);
 	if (status < 0)
-		goto netdev_cleanup;
+		goto fail;
 	ecm->ctrl_id = status;
 	ecm_iad_descriptor.bFirstInterface = status;
 
@@ -748,7 +736,7 @@ ecm_bind(struct usb_configuration *c, struct usb_function *f)
 
 	status = usb_interface_id(c, f);
 	if (status < 0)
-		goto netdev_cleanup;
+		goto fail;
 	ecm->data_id = status;
 
 	ecm_data_nop_intf.bInterfaceNumber = status;
@@ -760,13 +748,15 @@ ecm_bind(struct usb_configuration *c, struct usb_function *f)
 	/* allocate instance-specific endpoints */
 	ep = usb_ep_autoconfig(cdev->gadget, &fs_ecm_in_desc);
 	if (!ep)
-		goto netdev_cleanup;
+		goto fail;
 	ecm->port.in_ep = ep;
+	ep->driver_data = cdev;	/* claim */
 
 	ep = usb_ep_autoconfig(cdev->gadget, &fs_ecm_out_desc);
 	if (!ep)
-		goto netdev_cleanup;
+		goto fail;
 	ecm->port.out_ep = ep;
+	ep->driver_data = cdev;	/* claim */
 
 	/* NOTE:  a status/notification endpoint is *OPTIONAL* but we
 	 * don't treat it that way.  It's simpler, and some newer CDC
@@ -774,16 +764,18 @@ ecm_bind(struct usb_configuration *c, struct usb_function *f)
 	 */
 	ep = usb_ep_autoconfig(cdev->gadget, &fs_ecm_notify_desc);
 	if (!ep)
-		goto netdev_cleanup;
+		goto fail;
 	ecm->notify = ep;
+	ep->driver_data = cdev;	/* claim */
 
 	status = -ENOMEM;
 
 	/* allocate notification request and buffer */
 	ecm->notify_req = usb_ep_alloc_request(ep, GFP_KERNEL);
 	if (!ecm->notify_req)
-		goto netdev_cleanup;
-	ecm->notify_req->buf = kmalloc(ECM_STATUS_BYTECOUNT, GFP_KERNEL);
+		goto fail;
+	ecm->notify_req->buf = kmalloc(ECM_STATUS_BYTECOUNT +
+			cdev->gadget->extra_buf_alloc, GFP_KERNEL);
 	if (!ecm->notify_req->buf)
 		goto fail;
 	ecm->notify_req->context = ecm;
@@ -804,7 +796,7 @@ ecm_bind(struct usb_configuration *c, struct usb_function *f)
 		fs_ecm_notify_desc.bEndpointAddress;
 
 	status = usb_assign_descriptors(f, ecm_fs_function, ecm_hs_function,
-			ecm_ss_function, NULL);
+			ecm_ss_function);
 	if (status)
 		goto fail;
 
@@ -829,9 +821,14 @@ fail:
 		usb_ep_free_request(ecm->notify, ecm->notify_req);
 	}
 
-netdev_cleanup:
-	gether_cleanup(netdev_priv(ecm_opts->net));
-error:
+	/* we might as well release our claims on endpoints */
+	if (ecm->notify)
+		ecm->notify->driver_data = NULL;
+	if (ecm->port.out_ep)
+		ecm->port.out_ep->driver_data = NULL;
+	if (ecm->port.in_ep)
+		ecm->port.in_ep->driver_data = NULL;
+
 	ERROR(cdev, "%s: can't bind, err %d\n", f->name, status);
 
 	return status;
@@ -859,10 +856,10 @@ USB_ETHERNET_CONFIGFS_ITEM_ATTR_QMULT(ecm);
 USB_ETHERNET_CONFIGFS_ITEM_ATTR_IFNAME(ecm);
 
 static struct configfs_attribute *ecm_attrs[] = {
-	&ecm_opts_attr_dev_addr,
-	&ecm_opts_attr_host_addr,
-	&ecm_opts_attr_qmult,
-	&ecm_opts_attr_ifname,
+	&f_ecm_opts_dev_addr.attr,
+	&f_ecm_opts_host_addr.attr,
+	&f_ecm_opts_qmult.attr,
+	&f_ecm_opts_ifname.attr,
 	NULL,
 };
 
@@ -877,6 +874,10 @@ static void ecm_free_inst(struct usb_function_instance *f)
 	struct f_ecm_opts *opts;
 
 	opts = container_of(f, struct f_ecm_opts, func_inst);
+	if (opts->bound)
+		gether_cleanup(netdev_priv(opts->net));
+	else
+		free_netdev(opts->net);
 	kfree(opts);
 }
 
@@ -889,6 +890,12 @@ static struct usb_function_instance *ecm_alloc_inst(void)
 		return ERR_PTR(-ENOMEM);
 	mutex_init(&opts->lock);
 	opts->func_inst.free_func_inst = ecm_free_inst;
+	opts->net = gether_setup_default();
+	if (IS_ERR(opts->net)) {
+		struct net_device *net = opts->net;
+		kfree(opts);
+		return ERR_CAST(net);
+	}
 
 	config_group_init_type_name(&opts->func_inst.group, "", &ecm_func_type);
 
@@ -911,8 +918,6 @@ static void ecm_free(struct usb_function *f)
 static void ecm_unbind(struct usb_configuration *c, struct usb_function *f)
 {
 	struct f_ecm		*ecm = func_to_ecm(f);
-	struct f_ecm_opts	*opts = container_of(f->fi, struct f_ecm_opts,
-						func_inst);
 
 	DBG(c->cdev, "ecm unbind\n");
 
@@ -920,14 +925,13 @@ static void ecm_unbind(struct usb_configuration *c, struct usb_function *f)
 
 	kfree(ecm->notify_req->buf);
 	usb_ep_free_request(ecm->notify, ecm->notify_req);
-	opts->bound = false;
-	gether_cleanup(netdev_priv(opts->net));
 }
 
 static struct usb_function *ecm_alloc(struct usb_function_instance *fi)
 {
 	struct f_ecm	*ecm;
 	struct f_ecm_opts *opts;
+	int status;
 
 	/* allocate and initialize one new instance */
 	ecm = kzalloc(sizeof(*ecm), GFP_KERNEL);
@@ -937,8 +941,18 @@ static struct usb_function *ecm_alloc(struct usb_function_instance *fi)
 	opts = container_of(fi, struct f_ecm_opts, func_inst);
 	mutex_lock(&opts->lock);
 	opts->refcnt++;
+
+	/* export host's Ethernet address in CDC format */
+	status = gether_get_host_addr_cdc(opts->net, ecm->ethaddr,
+					  sizeof(ecm->ethaddr));
+	if (status < 12) {
+		kfree(ecm);
+		mutex_unlock(&opts->lock);
+		return ERR_PTR(-EINVAL);
+	}
 	ecm_string_defs[1].s = ecm->ethaddr;
 
+	ecm->port.ioport = netdev_priv(opts->net);
 	mutex_unlock(&opts->lock);
 	ecm->port.cdc_filter = DEFAULT_FILTER;
 

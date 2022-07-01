@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -115,12 +115,12 @@ int __ipa_generate_rt_hw_rule_v2(enum ipa_ip_type ip,
 	if (entry->hw_len == 0) {
 		entry->hw_len = buf - start;
 	} else if (entry->hw_len != (buf - start)) {
-		IPAERR(
-		"hw_len differs b/w passes passed=0x%x calc=0x%zxtd\n",
-		entry->hw_len,
-		(buf - start));
-		return -EPERM;
-	}
+			IPAERR(
+			"hw_len differs b/w passes passed=0x%x calc=0x%td\n",
+			entry->hw_len,
+			(buf - start));
+			return -EPERM;
+		}
 
 	return 0;
 }
@@ -230,7 +230,7 @@ int __ipa_generate_rt_hw_rule_v2_5(enum ipa_ip_type ip,
 	if (entry->hw_len == 0) {
 		entry->hw_len = buf - start;
 	} else if (entry->hw_len != (buf - start)) {
-		IPAERR("hw_len differs b/w passes passed=0x%x calc=0x%zxtd\n",
+		IPAERR("hw_len differs b/w passes passed=0x%x calc=0x%td\n",
 			entry->hw_len, (buf - start));
 		return -EPERM;
 	}
@@ -873,7 +873,7 @@ struct ipa_rt_tbl *__ipa_find_rt_tbl(enum ipa_ip_type ip, const char *name)
 
 	set = &ipa_ctx->rt_tbl_set[ip];
 	list_for_each_entry(entry, &set->head_rt_tbl_list, link) {
-		if (!strcmp(name, entry->name))
+		if (!strncmp(name, entry->name, IPA_RESOURCE_NAME_MAX))
 			return entry;
 	}
 
@@ -899,7 +899,6 @@ int ipa2_query_rt_index(struct ipa_ioc_get_rt_tbl_indx *in)
 
 	mutex_lock(&ipa_ctx->lock);
 	/* check if this table exists */
-	in->name[IPA_RESOURCE_NAME_MAX-1] = '\0';
 	entry = __ipa_find_rt_tbl(in->ip, in->name);
 	if (!entry) {
 		mutex_unlock(&ipa_ctx->lock);
@@ -1066,9 +1065,9 @@ static int __ipa_add_rt_rule(enum ipa_ip_type ip, const char *name,
 	 * do not allow any rules to be added at end of the "default" routing
 	 * tables
 	 */
-	if (!strcmp(tbl->name, IPA_DFLT_RT_TBL_NAME) &&
-	    (tbl->rule_cnt > 0)) {
-		IPAERR_RL("cannot add rules to default rt table\n");
+	if (!strncmp(tbl->name, IPA_DFLT_RT_TBL_NAME, IPA_RESOURCE_NAME_MAX) &&
+		(tbl->rule_cnt > 0)) {
+			IPAERR("cannot add rules to default rt table\n");
 		goto error;
 	}
 
@@ -1153,7 +1152,6 @@ int ipa2_add_rt_rule_usr(struct ipa_ioc_add_rt_rule *rules, bool user_only)
 
 	mutex_lock(&ipa_ctx->lock);
 	for (i = 0; i < rules->num_rules; i++) {
-		rules->rt_tbl_name[IPA_RESOURCE_NAME_MAX-1] = '\0';
 		if (__ipa_add_rt_rule(rules->ip, rules->rt_tbl_name,
 					&rules->rules[i].rule,
 					rules->rules[i].at_rear,
@@ -1205,6 +1203,7 @@ int __ipa_del_rt_rule(u32 rule_hdl)
 			return -EINVAL;
 		}
 	}
+
 	/* Adding check to confirm still
 	 * header entry present in header table or not
 	 */
@@ -1405,7 +1404,6 @@ int ipa2_reset_rt(enum ipa_ip_type ip, bool user_only)
 					hdr_entry->cookie != IPA_HDR_COOKIE) {
 						IPAERR_RL(
 						"Header already deleted\n");
-						mutex_unlock(&ipa_ctx->lock);
 						return -EINVAL;
 					}
 				} else if (rule->proc_ctx) {
@@ -1414,13 +1412,13 @@ int ipa2_reset_rt(enum ipa_ip_type ip, bool user_only)
 						rule->rule.hdr_proc_ctx_hdl);
 					if (!hdr_proc_entry ||
 						hdr_proc_entry->cookie !=
-						IPA_PROC_HDR_COOKIE) {
+							IPA_PROC_HDR_COOKIE) {
 					IPAERR_RL(
 						"Proc entry already deleted\n");
-						mutex_unlock(&ipa_ctx->lock);
 						return -EINVAL;
 					}
 				}
+				
 				tbl->rule_cnt--;
 				if (rule->hdr)
 					__ipa_release_hdr(rule->hdr->id);
@@ -1484,8 +1482,8 @@ int ipa2_reset_rt(enum ipa_ip_type ip, bool user_only)
 }
 
 /**
- * ipa2_get_rt_tbl() - lookup the specified routing table and return handle if
- * it exists, if lookup succeeds the routing table ref cnt is increased
+ * ipa2_get_rt_tbl() - lookup the specified routing table and return handle if it
+ * exists, if lookup succeeds the routing table ref cnt is increased
  * @lookup:	[inout] routing table to lookup and its handle
  *
  * Returns:	0 on success, negative on failure
@@ -1503,11 +1501,10 @@ int ipa2_get_rt_tbl(struct ipa_ioc_get_rt_tbl *lookup)
 		return -EINVAL;
 	}
 	mutex_lock(&ipa_ctx->lock);
-	lookup->name[IPA_RESOURCE_NAME_MAX-1] = '\0';
 	entry = __ipa_find_rt_tbl(lookup->ip, lookup->name);
 	if (entry && entry->cookie == IPA_RT_TBL_COOKIE) {
 		if (entry->ref_cnt == U32_MAX) {
-			IPAERR("fail: ref count crossed limit\n");
+			IPAERR_RL("fail: ref count crossed limit\n");
 			goto ret;
 		}
 		entry->ref_cnt++;

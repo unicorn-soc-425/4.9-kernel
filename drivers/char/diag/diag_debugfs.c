@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -34,8 +34,6 @@
 #include "diagfwd_peripheral.h"
 #include "diagfwd_smd.h"
 #include "diagfwd_socket.h"
-#include "diagfwd_glink.h"
-#include "diag_pcie.h"
 #include "diag_debugfs.h"
 #include "diag_ipc_logging.h"
 
@@ -44,10 +42,8 @@ static struct dentry *diag_dbgfs_dent;
 static int diag_dbgfs_table_index;
 static int diag_dbgfs_mempool_index;
 static int diag_dbgfs_usbinfo_index;
-static int diag_dbgfs_pcieinfo_index;
 static int diag_dbgfs_smdinfo_index;
 static int diag_dbgfs_socketinfo_index;
-static int diag_dbgfs_glinkinfo_index;
 static int diag_dbgfs_hsicinfo_index;
 static int diag_dbgfs_mhiinfo_index;
 static int diag_dbgfs_bridgeinfo_index;
@@ -61,10 +57,11 @@ static ssize_t diag_dbgfs_read_status(struct file *file, char __user *ubuf,
 	char *buf;
 	int ret, i;
 	unsigned int buf_size;
-
 	buf = kzalloc(sizeof(char) * DEBUG_BUF_SIZE, GFP_KERNEL);
-	if (!buf)
+	if (!buf) {
+		pr_err("diag: %s, Error allocating memory\n", __func__);
 		return -ENOMEM;
+	}
 	buf_size = ksize(buf);
 	ret = scnprintf(buf, buf_size,
 		"CPU Tools ID: %d\n"
@@ -73,7 +70,6 @@ static ssize_t diag_dbgfs_read_status(struct file *file, char __user *ubuf,
 		"Uses Device Tree: %d\n"
 		"Apps Supports Separate CMDRSP: %d\n"
 		"Apps Supports HDLC Encoding: %d\n"
-		"Apps Supports Header Untagging: %d\n"
 		"Apps Supports Sockets: %d\n"
 		"Logging Mode: %d\n"
 		"RSP Buffer is Busy: %d\n"
@@ -81,15 +77,13 @@ static ssize_t diag_dbgfs_read_status(struct file *file, char __user *ubuf,
 		"Time Sync Enabled: %d\n"
 		"MD session mode: %d\n"
 		"MD session mask: %d\n"
-		"Uses Time API: %d\n"
-		"Supports PD buffering: %d\n",
+		"Uses Time API: %d\n",
 		chk_config_get_id(),
 		chk_polling_response(),
 		driver->polling_reg_flag,
 		driver->use_device_tree,
 		driver->supports_separate_cmdrsp,
 		driver->supports_apps_hdlc_encoding,
-		driver->supports_apps_header_untagging,
 		driver->supports_sockets,
 		driver->logging_mode,
 		driver->rsp_buf_busy,
@@ -97,12 +91,11 @@ static ssize_t diag_dbgfs_read_status(struct file *file, char __user *ubuf,
 		driver->time_sync_enabled,
 		driver->md_session_mode,
 		driver->md_session_mask,
-		driver->uses_time_api,
-		driver->supports_pd_buffering);
+		driver->uses_time_api);
 
 	for (i = 0; i < NUM_PERIPHERALS; i++) {
 		ret += scnprintf(buf+ret, buf_size-ret,
-			"p: %s Feature: %02x %02x |%c%c%c%c%c%c%c%c%c%c|\n",
+			"p: %s Feature: %02x %02x |%c%c%c%c%c%c%c%c|\n",
 			PERIPHERAL_STRING(i),
 			driver->feature[i].feature_mask[0],
 			driver->feature[i].feature_mask[1],
@@ -111,11 +104,9 @@ static ssize_t diag_dbgfs_read_status(struct file *file, char __user *ubuf,
 			driver->feature[i].encode_hdlc ? 'H':'h',
 			driver->feature[i].peripheral_buffering ? 'B':'b',
 			driver->feature[i].mask_centralization ? 'M':'m',
-			driver->feature[i].pd_buffering ? 'P':'p',
 			driver->feature[i].stm_support ? 'Q':'q',
 			driver->feature[i].sockets_enabled ? 'S':'s',
-			driver->feature[i].sent_feature_mask ? 'T':'t',
-			driver->feature[i].untag_header ? 'U':'u');
+			driver->feature[i].sent_feature_mask ? 'T':'t');
 	}
 
 #ifdef CONFIG_DIAG_OVER_USB
@@ -144,17 +135,18 @@ static ssize_t diag_dbgfs_read_dcistats(struct file *file,
 	unsigned int bytes_in_buf = 0, i = 0;
 	struct diag_dci_data_info *temp_data = dci_traffic;
 	unsigned int buf_size;
-
-	buf_size = (count > DEBUG_BUF_SIZE) ? DEBUG_BUF_SIZE : count;
+	buf_size = (DEBUG_BUF_SIZE < count) ? DEBUG_BUF_SIZE : count;
 
 	if (diag_dbgfs_dci_finished) {
 		diag_dbgfs_dci_finished = 0;
 		return 0;
 	}
 
-	buf = kcalloc(buf_size, sizeof(char), GFP_KERNEL);
-	if (ZERO_OR_NULL_PTR(buf))
+	buf = kzalloc(sizeof(char) * buf_size, GFP_KERNEL);
+	if (ZERO_OR_NULL_PTR(buf)) {
+		pr_err("diag: %s, Error allocating memory\n", __func__);
 		return -ENOMEM;
+	}
 
 	buf_size = ksize(buf);
 	bytes_remaining = buf_size;
@@ -232,8 +224,10 @@ static ssize_t diag_dbgfs_read_power(struct file *file, char __user *ubuf,
 	unsigned int buf_size;
 
 	buf = kzalloc(sizeof(char) * DEBUG_BUF_SIZE, GFP_KERNEL);
-	if (!buf)
+	if (!buf) {
+		pr_err("diag: %s, Error allocating memory\n", __func__);
 		return -ENOMEM;
+	}
 
 	buf_size = ksize(buf);
 	ret = scnprintf(buf, buf_size,
@@ -282,9 +276,9 @@ static ssize_t diag_dbgfs_read_table(struct file *file, char __user *ubuf,
 		return 0;
 	}
 
-	buf_size = (count > DEBUG_BUF_SIZE) ? DEBUG_BUF_SIZE : count;
+	buf_size = (DEBUG_BUF_SIZE < count) ? DEBUG_BUF_SIZE : count;
 
-	buf = kcalloc(buf_size, sizeof(char), GFP_KERNEL);
+	buf = kzalloc(sizeof(char) * buf_size, GFP_KERNEL);
 	if (ZERO_OR_NULL_PTR(buf)) {
 		pr_err("diag: %s, Error allocating memory\n", __func__);
 		mutex_unlock(&driver->cmd_reg_mutex);
@@ -381,7 +375,7 @@ static ssize_t diag_dbgfs_read_mempool(struct file *file, char __user *ubuf,
 		mempool = &diag_mempools[i];
 		bytes_written = scnprintf(buf+bytes_in_buffer, bytes_remaining,
 			"%-24s\t"
-			"%-10p\t"
+			"%-10pK\t"
 			"%-5d\t"
 			"%-5d\t"
 			"%-5d\n",
@@ -483,67 +477,6 @@ static ssize_t diag_dbgfs_read_usbinfo(struct file *file, char __user *ubuf,
 	return ret;
 }
 
-static ssize_t diag_dbgfs_read_pcieinfo(struct file *file, char __user *ubuf,
-				       size_t count, loff_t *ppos)
-{
-	char *buf = NULL;
-	int ret = 0;
-	int i = 0;
-	unsigned int buf_size;
-	unsigned int bytes_remaining = 0;
-	unsigned int bytes_written = 0;
-	unsigned int bytes_in_buffer = 0;
-	struct diag_pcie_info *pcie_info = NULL;
-	unsigned int temp_size = sizeof(char) * DEBUG_BUF_SIZE;
-
-	if (diag_dbgfs_pcieinfo_index >= NUM_DIAG_PCIE_DEV) {
-		/* Done. Reset to prepare for future requests */
-		diag_dbgfs_pcieinfo_index = 0;
-		return 0;
-	}
-
-	buf = kzalloc(temp_size, GFP_KERNEL);
-	if (ZERO_OR_NULL_PTR(buf))
-		return -ENOMEM;
-
-	buf_size = ksize(buf);
-	bytes_remaining = buf_size;
-	for (i = diag_dbgfs_pcieinfo_index; i < NUM_DIAG_PCIE_DEV; i++) {
-		pcie_info = &diag_pcie[i];
-		bytes_written = scnprintf(buf+bytes_in_buffer, bytes_remaining,
-			"id: %d\n"
-			"name: %s\n"
-			"in channel hdl: %pK\n"
-			"out channel hdl: %pK\n"
-			"mempool: %s\n"
-			"read count: %lu\n"
-			"write count: %lu\n"
-			"read work pending: %d\n",
-			pcie_info->id,
-			pcie_info->name,
-			pcie_info->in_handle,
-			pcie_info->out_handle,
-			DIAG_MEMPOOL_GET_NAME(pcie_info->mempool),
-			pcie_info->read_cnt,
-			pcie_info->write_cnt,
-			work_pending(&pcie_info->read_work));
-		bytes_in_buffer += bytes_written;
-
-		/* Check if there is room to add another table entry */
-		bytes_remaining = buf_size - bytes_in_buffer;
-
-		if (bytes_remaining < bytes_written)
-			break;
-	}
-	diag_dbgfs_pcieinfo_index = i+1;
-	*ppos = 0;
-	ret = simple_read_from_buffer(ubuf, count, ppos, buf, bytes_in_buffer);
-
-	kfree(buf);
-	return ret;
-}
-
-#ifdef CONFIG_DIAG_USES_SMD
 static ssize_t diag_dbgfs_read_smdinfo(struct file *file, char __user *ubuf,
 				       size_t count, loff_t *ppos)
 {
@@ -565,10 +498,12 @@ static ssize_t diag_dbgfs_read_smdinfo(struct file *file, char __user *ubuf,
 	}
 
 	buf = kzalloc(sizeof(char) * DEBUG_BUF_SIZE, GFP_KERNEL);
-	if (!buf)
+	if (ZERO_OR_NULL_PTR(buf)) {
+		pr_err("diag: %s, Error allocating memory\n", __func__);
 		return -ENOMEM;
+	}
 
-	buf_size = DEBUG_BUF_SIZE;
+	buf_size = ksize(buf);
 	bytes_remaining = buf_size;
 	for (i = 0; i < NUM_TYPES; i++) {
 		for (j = 0; j < NUM_PERIPHERALS; j++) {
@@ -647,7 +582,6 @@ static ssize_t diag_dbgfs_read_smdinfo(struct file *file, char __user *ubuf,
 	kfree(buf);
 	return ret;
 }
-#endif
 
 static ssize_t diag_dbgfs_read_socketinfo(struct file *file, char __user *ubuf,
 					  size_t count, loff_t *ppos)
@@ -755,111 +689,6 @@ static ssize_t diag_dbgfs_read_socketinfo(struct file *file, char __user *ubuf,
 	return ret;
 }
 
-static ssize_t diag_dbgfs_read_glinkinfo(struct file *file, char __user *ubuf,
-					  size_t count, loff_t *ppos)
-{
-	char *buf = NULL;
-	int ret = 0;
-	int i = 0;
-	int j = 0;
-	unsigned int buf_size;
-	unsigned int bytes_remaining = 0;
-	unsigned int bytes_written = 0;
-	unsigned int bytes_in_buffer = 0;
-	struct diag_glink_info *info = NULL;
-	struct diagfwd_info *fwd_ctxt = NULL;
-
-	if (diag_dbgfs_glinkinfo_index >= NUM_PERIPHERALS) {
-		/* Done. Reset to prepare for future requests */
-		diag_dbgfs_socketinfo_index = 0;
-		return 0;
-	}
-
-	buf = kzalloc(sizeof(char) * DEBUG_BUF_SIZE, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	buf_size = ksize(buf);
-	bytes_remaining = buf_size;
-	for (i = 0; i < NUM_TYPES; i++) {
-		for (j = 0; j < NUM_PERIPHERALS; j++) {
-			switch (i) {
-			case TYPE_DATA:
-				info = &glink_data[j];
-				break;
-			case TYPE_CNTL:
-				info = &glink_cntl[j];
-				break;
-			case TYPE_DCI:
-				info = &glink_dci[j];
-				break;
-			case TYPE_CMD:
-				info = &glink_cmd[j];
-				break;
-			case TYPE_DCI_CMD:
-				info = &glink_dci_cmd[j];
-				break;
-			default:
-				return -EINVAL;
-			}
-
-			fwd_ctxt = (struct diagfwd_info *)(info->fwd_ctxt);
-
-			bytes_written = scnprintf(buf+bytes_in_buffer,
-				bytes_remaining,
-				"name\t\t:\t%s\n"
-				"hdl\t\t:\t%pK\n"
-				"inited\t\t:\t%d\n"
-				"opened\t\t:\t%d\n"
-				"diag_state\t:\t%d\n"
-				"buf_1 busy\t:\t%d\n"
-				"buf_2 busy\t:\t%d\n"
-				"tx_intent_ready\t:\t%d\n"
-				"open pending\t:\t%d\n"
-				"close pending\t:\t%d\n"
-				"read pending\t:\t%d\n"
-				"bytes read\t:\t%lu\n"
-				"bytes written\t:\t%lu\n"
-				"fwd inited\t:\t%d\n"
-				"fwd opened\t:\t%d\n"
-				"fwd ch_open\t:\t%d\n\n",
-				info->name,
-				info->hdl,
-				info->inited,
-				atomic_read(&info->opened),
-				atomic_read(&info->diag_state),
-				(fwd_ctxt && fwd_ctxt->buf_1) ?
-				atomic_read(&fwd_ctxt->buf_1->in_busy) : -1,
-				(fwd_ctxt && fwd_ctxt->buf_2) ?
-				atomic_read(&fwd_ctxt->buf_2->in_busy) : -1,
-				atomic_read(&info->tx_intent_ready),
-				work_pending(&info->open_work),
-				work_pending(&info->close_work),
-				work_pending(&info->read_work),
-				(fwd_ctxt) ? fwd_ctxt->read_bytes : 0,
-				(fwd_ctxt) ? fwd_ctxt->write_bytes : 0,
-				(fwd_ctxt) ? fwd_ctxt->inited : -1,
-				(fwd_ctxt) ?
-				atomic_read(&fwd_ctxt->opened) : -1,
-				(fwd_ctxt) ? fwd_ctxt->ch_open : -1);
-			bytes_in_buffer += bytes_written;
-
-			/* Check if there is room to add another table entry */
-			bytes_remaining = buf_size - bytes_in_buffer;
-
-			if (bytes_remaining < bytes_written)
-				break;
-		}
-	}
-	diag_dbgfs_glinkinfo_index = i+1;
-	*ppos = 0;
-	ret = simple_read_from_buffer(ubuf, count, ppos, buf, bytes_in_buffer);
-
-	kfree(buf);
-	return ret;
-}
-
-#ifdef CONFIG_IPC_LOGGING
 static ssize_t diag_dbgfs_write_debug(struct file *fp, const char __user *buf,
 				      size_t count, loff_t *ppos)
 {
@@ -890,7 +719,6 @@ static ssize_t diag_dbgfs_write_debug(struct file *fp, const char __user *buf,
 	diag_debug_mask = (uint16_t)value;
 	return count;
 }
-#endif
 
 #ifdef CONFIG_DIAGFWD_BRIDGE_CODE
 #ifdef CONFIG_USB_QCOM_DIAG_BRIDGE
@@ -1116,18 +944,12 @@ const struct file_operations diag_dbgfs_status_ops = {
 	.read = diag_dbgfs_read_status,
 };
 
-#ifdef CONFIG_DIAG_USES_SMD
-static const struct file_operations diag_dbgfs_smdinfo_ops = {
+const struct file_operations diag_dbgfs_smdinfo_ops = {
 	.read = diag_dbgfs_read_smdinfo,
 };
-#endif
 
 const struct file_operations diag_dbgfs_socketinfo_ops = {
 	.read = diag_dbgfs_read_socketinfo,
-};
-
-const struct file_operations diag_dbgfs_glinkinfo_ops = {
-	.read = diag_dbgfs_read_glinkinfo,
 };
 
 const struct file_operations diag_dbgfs_table_ops = {
@@ -1142,10 +964,6 @@ const struct file_operations diag_dbgfs_usbinfo_ops = {
 	.read = diag_dbgfs_read_usbinfo,
 };
 
-const struct file_operations diag_dbgfs_pcieinfo_ops = {
-	.read = diag_dbgfs_read_pcieinfo,
-};
-
 const struct file_operations diag_dbgfs_dcistats_ops = {
 	.read = diag_dbgfs_read_dcistats,
 };
@@ -1154,11 +972,9 @@ const struct file_operations diag_dbgfs_power_ops = {
 	.read = diag_dbgfs_read_power,
 };
 
-#ifdef CONFIG_IPC_LOGGING
 const struct file_operations diag_dbgfs_debug_ops = {
 	.write = diag_dbgfs_write_debug
 };
-#endif
 
 int diag_debugfs_init(void)
 {
@@ -1173,20 +989,13 @@ int diag_debugfs_init(void)
 	if (!entry)
 		goto err;
 
-#ifdef CONFIG_DIAG_USES_SMD
-	entry = debugfs_create_file("smdinfo", 0444, diag_dbgfs_dent, NULL,
+	entry = debugfs_create_file("smdinfo", 0444, diag_dbgfs_dent, 0,
 				    &diag_dbgfs_smdinfo_ops);
 	if (!entry)
 		goto err;
-#endif
 
 	entry = debugfs_create_file("socketinfo", 0444, diag_dbgfs_dent, 0,
 				    &diag_dbgfs_socketinfo_ops);
-	if (!entry)
-		goto err;
-
-	entry = debugfs_create_file("glinkinfo", 0444, diag_dbgfs_dent, 0,
-				    &diag_dbgfs_glinkinfo_ops);
 	if (!entry)
 		goto err;
 
@@ -1205,11 +1014,6 @@ int diag_debugfs_init(void)
 	if (!entry)
 		goto err;
 
-	entry = debugfs_create_file("pcieinfo", 0444, diag_dbgfs_dent, 0,
-				    &diag_dbgfs_pcieinfo_ops);
-	if (!entry)
-		goto err;
-
 	entry = debugfs_create_file("dci_stats", 0444, diag_dbgfs_dent, 0,
 				    &diag_dbgfs_dcistats_ops);
 	if (!entry)
@@ -1220,12 +1024,11 @@ int diag_debugfs_init(void)
 	if (!entry)
 		goto err;
 
-#ifdef CONFIG_IPC_LOGGING
 	entry = debugfs_create_file("debug", 0444, diag_dbgfs_dent, 0,
 				    &diag_dbgfs_debug_ops);
 	if (!entry)
 		goto err;
-#endif
+
 #ifdef CONFIG_DIAGFWD_BRIDGE_CODE
 	entry = debugfs_create_file("bridge", 0444, diag_dbgfs_dent, 0,
 				    &diag_dbgfs_bridge_ops);
@@ -1273,8 +1076,11 @@ err:
 
 void diag_debugfs_cleanup(void)
 {
-	debugfs_remove_recursive(diag_dbgfs_dent);
-	diag_dbgfs_dent = NULL;
+	if (diag_dbgfs_dent) {
+		debugfs_remove_recursive(diag_dbgfs_dent);
+		diag_dbgfs_dent = NULL;
+	}
+
 	kfree(dci_traffic);
 	mutex_destroy(&dci_stat_mutex);
 	mutex_destroy(&diag_dci_dbgfs_mutex);

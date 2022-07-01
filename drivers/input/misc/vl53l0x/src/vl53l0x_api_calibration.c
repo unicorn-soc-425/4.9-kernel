@@ -16,6 +16,7 @@
  *  GNU General Public License for more details.
  */
 
+
 #include "vl53l0x_api.h"
 #include "vl53l0x_api_core.h"
 #include "vl53l0x_api_calibration.h"
@@ -125,9 +126,9 @@ int8_t VL_perform_xtalk_calibration(struct vl_data *Dev,
 		xTalkStoredMeanRtnSpadsAsInt = (xTalkStoredMeanRtnSpads +
 			0x8000) >> 16;
 
-		/* Round Cal Distance to Whole Number. */
-		/* Note that the cal distance is in mm, */
-		/* therefore no resolution is lost.*/
+		/* Round Cal Distance to Whole Number.
+		 * Note that the cal distance is in mm, therefore no resolution
+		 * is lost.*/
 		 xTalkCalDistanceAsInt = (XTalkCalDistance + 0x8000) >> 16;
 
 		if (xTalkStoredMeanRtnSpadsAsInt == 0 ||
@@ -135,24 +136,24 @@ int8_t VL_perform_xtalk_calibration(struct vl_data *Dev,
 		   xTalkStoredMeanRange >= XTalkCalDistance) {
 			XTalkCompensationRateMegaCps = 0;
 		} else {
-			/* Round Cal Distance to Whole Number. */
-			/* Note that the cal distance is in mm, therefore no */
-			/* resolution is lost.*/
+			/* Round Cal Distance to Whole Number.
+			   Note that the cal distance is in mm, therefore no
+			   resolution is lost.*/
 			xTalkCalDistanceAsInt = (XTalkCalDistance +
 				0x8000) >> 16;
 
-			/* Apply division by mean spad count early in the */
-			/* calculation to keep the numbers small. */
-			/* This ensures we can maintain a 32bit calculation. */
-			/* Fixed1616 / int := Fixed1616 */
+			/* Apply division by mean spad count early in the
+			 * calculation to keep the numbers small.
+			 * This ensures we can maintain a 32bit calculation.
+			 * Fixed1616 / int := Fixed1616 */
 			signalXTalkTotalPerSpad = (xTalkStoredMeanSignalRate) /
 				xTalkStoredMeanRtnSpadsAsInt;
 
-			/* Complete the calculation for total Signal */
-			/* XTalk per SPAD */
-			/* Fixed1616 * (Fixed1616 - Fixed1616/int) := */
-			/* (2^16 * Fixed1616) */
-
+			/* Complete the calculation for total Signal XTalk per
+			 * SPAD
+			 * Fixed1616 * (Fixed1616 - Fixed1616/int) :=
+			 * (2^16 * Fixed1616)
+			 */
 			signalXTalkTotalPerSpad *= ((1 << 16) -
 				(xTalkStoredMeanRange / xTalkCalDistanceAsInt));
 
@@ -247,9 +248,9 @@ int8_t VL_perform_offset_calibration(struct vl_data *Dev,
 
 		StoredMeanRangeAsInt = (StoredMeanRange + 0x8000) >> 16;
 
-		/* Round Cal Distance to Whole Number. */
-		/* Note that the cal distance is in mm, */
-		/* therefore no resolution is lost.*/
+		/* Round Cal Distance to Whole Number.
+		 * Note that the cal distance is in mm, therefore no resolution
+		 * is lost.*/
 		 CalDistanceAsInt_mm = (CalDistanceMilliMeter + 0x8000) >> 16;
 
 		 *pOffsetMicroMeter = (CalDistanceAsInt_mm -
@@ -351,8 +352,8 @@ int8_t VL_apply_offset_adjustment(struct vl_data *Dev)
 	int32_t CorrectedOffsetMicroMeters;
 	int32_t CurrentOffsetMicroMeters;
 
-	/* if we run on this function we can read all the NVM info */
-	/* used by the API */
+	/* if we run on this function we can read all the NVM info
+	 * used by the API */
 	Status = VL_get_info_from_device(Dev, 7);
 
 	/* Read back current device offset */
@@ -415,8 +416,8 @@ void get_next_good_spad(uint8_t goodSpadArray[], uint32_t size,
 		dataByte = goodSpadArray[coarseIndex];
 
 		if (coarseIndex == startIndex) {
-			/* locate the bit position of the provided current */
-			/* spad bit before iterating */
+			/* locate the bit position of the provided current
+			 * spad bit before iterating */
 			dataByte >>= fineOffset;
 			fineIndex = fineOffset;
 		}
@@ -502,10 +503,11 @@ int8_t count_enabled_spads(uint8_t spadArray[],
 		for (bitIndex = 0; bitIndex <= cSpadsPerByte; bitIndex++) {
 			if ((tempByte & 0x01) == 1) {
 				(*pTotalSpadsEnabled)++;
+
 				if (!spadTypeIdentified) {
 					*pIsAperture = 1;
 					if ((byteIndex < 2) && (bitIndex < 4))
-						*pIsAperture = 0;
+							*pIsAperture = 0;
 					spadTypeIdentified = 1;
 				}
 			}
@@ -776,8 +778,8 @@ int8_t VL_perform_ref_spad_management(struct vl_data *Dev,
 			&peakSignalRateRef);
 		if ((Status == VL_ERROR_NONE) &&
 			(peakSignalRateRef > targetRefRate)) {
-			/* Signal rate measurement too high, */
-			/* switch to APERTURE SPADs */
+			/* Signal rate measurement too high,
+			 * switch to APERTURE SPADs */
 
 			for (index = 0; index < spadArraySize; index++)
 				Dev->Data.SpadData.RefSpadEnables[index] = 0;
@@ -871,8 +873,8 @@ int8_t VL_perform_ref_spad_management(struct vl_data *Dev,
 
 			if (Status == VL_ERROR_NONE) {
 				currentSpadIndex++;
-				/* Proceed to apply the additional spad and */
-				/* perform measurement. */
+				/* Proceed to apply the additional spad and
+				 * perform measurement. */
 				Status = set_ref_spad_map(Dev,
 					Dev->Data.SpadData.RefSpadEnables);
 			}
@@ -889,13 +891,13 @@ int8_t VL_perform_ref_spad_management(struct vl_data *Dev,
 			signalRateDiff = abs(peakSignalRateRef - targetRefRate);
 
 			if (peakSignalRateRef > targetRefRate) {
-				/* Select the spad map that provides the */
-				/* measurement closest to the target rate, */
-				/* either above or below it. */
-
+				/* Select the spad map that provides the
+				 * measurement closest to the target rate,
+				 * either above or below it.
+				 */
 				if (signalRateDiff > lastSignalRateDiff) {
-				/* Previous spad map produced a closer */
-				/* measurement, so choose this. */
+					/* Previous spad map produced a closer
+					 * measurement, so choose this. */
 					Status = set_ref_spad_map(Dev,
 							lastSpadArray);
 					memcpy(
@@ -1212,8 +1214,8 @@ int8_t VL_perform_ref_calibration(struct vl_data *Dev,
 
 	SequenceConfig = PALDevDataGet(Dev, SequenceConfig);
 
-	/* In the following function we don't save the config to optimize */
-	/* writes on device. Config is saved and restored only once. */
+	/* In the following function we don't save the config to optimize
+	 * writes on device. Config is saved and restored only once. */
 	Status = VL_perform_vhv_calibration(
 			Dev, pVhvSettings, get_data_enable, 0);
 

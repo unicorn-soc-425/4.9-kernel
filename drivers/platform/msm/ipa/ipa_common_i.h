@@ -15,7 +15,6 @@
 
 #ifndef _IPA_COMMON_I_H_
 #define _IPA_COMMON_I_H_
-#include <linux/errno.h>
 #include <linux/ipc_logging.h>
 #include <linux/ipa.h>
 #include <linux/ipa_uc_offload.h>
@@ -148,10 +147,8 @@ do {\
 		ipa_assert();\
 } while (0)
 
-#define IPA_CLIENT_IS_PROD(x) \
-	(x < IPA_CLIENT_MAX && (x & 0x1) == 0)
-#define IPA_CLIENT_IS_CONS(x) \
-	(x < IPA_CLIENT_MAX && (x & 0x1) == 1)
+#define IPA_CLIENT_IS_PROD(x) (x >= IPA_CLIENT_PROD && x < IPA_CLIENT_CONS)
+#define IPA_CLIENT_IS_CONS(x) (x >= IPA_CLIENT_CONS && x < IPA_CLIENT_MAX)
 
 #define IPA_GSI_CHANNEL_STOP_SLEEP_MIN_USEC (1000)
 #define IPA_GSI_CHANNEL_STOP_SLEEP_MAX_USEC (2000)
@@ -182,6 +179,9 @@ struct ipa_mem_buffer {
 	dma_addr_t phys_base;
 	u32 size;
 };
+
+#define IPA_MHI_GSI_ER_START 10
+#define IPA_MHI_GSI_ER_END 16
 
 /**
  * enum ipa3_mhi_burst_mode - MHI channel burst mode state
@@ -411,38 +411,21 @@ int ipa_setup_uc_ntn_pipes(struct ipa_ntn_conn_in_params *in,
 	ipa_notify_cb notify, void *priv, u8 hdr_len,
 	struct ipa_ntn_conn_out_params *outp);
 
-int ipa_tear_down_uc_offload_pipes(int ipa_ep_idx_ul, int ipa_ep_idx_dl,
-	struct ipa_ntn_conn_in_params *params);
-u8 *ipa_write_64(u64 w, u8 *dest);
-u8 *ipa_write_32(u32 w, u8 *dest);
-u8 *ipa_write_16(u16 hw, u8 *dest);
-u8 *ipa_write_8(u8 b, u8 *dest);
-u8 *ipa_pad_to_64(u8 *dest);
-u8 *ipa_pad_to_32(u8 *dest);
+int ipa_tear_down_uc_offload_pipes(int ipa_ep_idx_ul, int ipa_ep_idx_dl);
 int ipa_ntn_uc_reg_rdyCB(void (*ipauc_ready_cb)(void *user_data),
 			      void *user_data);
 void ipa_ntn_uc_dereg_rdyCB(void);
 
-int ipa_conn_wdi_pipes(struct ipa_wdi_conn_in_params *in,
-	struct ipa_wdi_conn_out_params *out,
-	ipa_wdi_meter_notifier_cb wdi_notify);
+int ipa_conn_wdi3_pipes(struct ipa_wdi3_conn_in_params *in,
+	struct ipa_wdi3_conn_out_params *out);
 
-int ipa_disconn_wdi_pipes(int ipa_ep_idx_tx, int ipa_ep_idx_rx);
+int ipa_disconn_wdi3_pipes(int ipa_ep_idx_tx, int ipa_ep_idx_rx);
 
-int ipa_enable_wdi_pipes(int ipa_ep_idx_tx, int ipa_ep_idx_rx);
+int ipa_enable_wdi3_pipes(int ipa_ep_idx_tx, int ipa_ep_idx_rx);
 
-int ipa_disable_wdi_pipes(int ipa_ep_idx_tx, int ipa_ep_idx_rx);
+int ipa_disable_wdi3_pipes(int ipa_ep_idx_tx, int ipa_ep_idx_rx);
 
 const char *ipa_get_version_string(enum ipa_hw_type ver);
 int ipa_start_gsi_channel(u32 clnt_hdl);
-
-bool ipa_pm_is_used(void);
-
-int ipa_smmu_store_sgt(struct sg_table **out_ch_ptr,
-		struct sg_table *in_sgt_ptr);
-int ipa_smmu_free_sgt(struct sg_table **out_sgt_ptr);
-
-int ipa_ut_module_init(void);
-void ipa_ut_module_exit(void);
 
 #endif /* _IPA_COMMON_I_H_ */

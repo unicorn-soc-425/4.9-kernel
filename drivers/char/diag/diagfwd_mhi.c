@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -132,8 +132,9 @@ static int mhi_buf_tbl_add(struct diag_mhi_info *mhi_info, int type,
 	}
 
 	item = kzalloc(sizeof(struct diag_mhi_buf_tbl_t), GFP_KERNEL);
-	if (!item)
+	if (!item) {
 		return -ENOMEM;
+	}
 	kmemleak_not_leak(item);
 
 	spin_lock_irqsave(&ch->lock, flags);
@@ -196,7 +197,7 @@ static void mhi_buf_tbl_clear(struct diag_mhi_info *mhi_info)
 	struct diag_mhi_buf_tbl_t *item = NULL;
 	struct diag_mhi_ch_t *ch = NULL;
 
-	if (!mhi_info || !mhi_info->enabled)
+	if (!mhi_info)
 		return;
 
 	/* Clear all the pending reads */
@@ -434,10 +435,9 @@ static void mhi_read_work_fn(struct work_struct *work)
 	do {
 		if (!(atomic_read(&(read_ch->opened))))
 			break;
-		spin_lock_irqsave(&read_ch->lock, flags);
+
 		buf = diagmem_alloc(driver, DIAG_MDM_BUF_SIZE,
 				    mhi_info->mempool);
-		spin_unlock_irqrestore(&read_ch->lock, flags);
 		if (!buf)
 			break;
 
@@ -553,8 +553,6 @@ static void mhi_notifier(struct mhi_cb_info *cb_info)
 	struct mhi_result *result = NULL;
 	struct diag_mhi_ch_t *ch = NULL;
 	void *buf = NULL;
-	struct diag_mhi_info *mhi_info = NULL;
-	unsigned long flags;
 
 	if (!cb_info)
 		return;
@@ -606,6 +604,13 @@ static void mhi_notifier(struct mhi_cb_info *cb_info)
 		queue_work(diag_mhi[index].mhi_wq,
 			   &(diag_mhi[index].open_work));
 		break;
+	case MHI_CB_MHI_DISABLED:
+		DIAG_LOG(DIAG_DEBUG_BRIDGE,
+			 "received mhi disabled notifiation port: %d ch: %d\n",
+			 index, ch->type);
+		atomic_set(&(ch->opened), 0);
+		__mhi_close(&diag_mhi[index], CHANNELS_CLOSED);
+		break;
 	case MHI_CB_XFER:
 		/*
 		 * If the channel is a read channel, this is a read
@@ -632,29 +637,13 @@ static void mhi_notifier(struct mhi_cb_info *cb_info)
 					   result->bytes_xferd,
 					   diag_mhi[index].id);
 		break;
-	case MHI_CB_MHI_DISABLED:
-	case MHI_CB_SYS_ERROR:
-	case MHI_CB_MHI_SHUTDOWN:
-		DIAG_LOG(DIAG_DEBUG_BRIDGE,
-			 "received mhi link down cb: %d port: %d ch: %d\n",
-			 cb_info->cb_reason, index, ch->type);
-		mhi_info = &diag_mhi[index];
-		if (!mhi_info->enabled)
-			return;
-		spin_lock_irqsave(&mhi_info->lock, flags);
-		mhi_info->enabled = 0;
-		spin_unlock_irqrestore(&mhi_info->lock, flags);
-		atomic_set(&(mhi_info->read_ch.opened), 0);
-		atomic_set(&(mhi_info->write_ch.opened), 0);
-		flush_workqueue(mhi_info->mhi_wq);
-		mhi_buf_tbl_clear(mhi_info);
-		diag_remote_dev_close(mhi_info->dev_id);
-		break;
 	default:
 		pr_err("diag: In %s, invalid cb reason 0x%x\n", __func__,
 		       cb_info->cb_reason);
 		break;
 	}
+
+	return;
 }
 
 static struct diag_remote_dev_ops diag_mhi_fwd_ops = {
@@ -668,7 +657,6 @@ static struct diag_remote_dev_ops diag_mhi_fwd_ops = {
 static int diag_mhi_register_ch(int id, struct diag_mhi_ch_t *ch)
 {
 	int ctxt = 0;
-
 	if (!ch)
 		return -EIO;
 	if (id < 0 || id >= NUM_MHI_DEV)
@@ -677,11 +665,28 @@ static int diag_mhi_register_ch(int id, struct diag_mhi_ch_t *ch)
 	atomic_set(&(ch->opened), 0);
 	ctxt = SET_CH_CTXT(id, ch->type);
 	ch->client_info.mhi_client_cb = mhi_notifier;
-	return mhi_register_channel(&ch->hdl, ch->chan, 0, &ch->client_info,
-				    (void *)(uintptr_t)ctxt);
+	ch->client_info.chan = ch->chan;
+	ch->client_info.dev = &driver->pdev->dev;
+	ch->client_info.node_name = "qcom,mhi";
+	ch->client_info.user_data = (void *)(uintptr_t)ctxt;
+	return mhi_register_channel(&ch->hdl, &ch->client_info);
 }
 
-int diag_mhi_init(void)
+static void diag_mhi_dev_exit(int dev)
+{
+	struct diag_mhi_info *mhi_info = NULL;
+
+	mhi_info = &diag_mhi[dev];
+	if (!mhi_info)
+		return;
+	if (mhi_info->mhi_wq)
+		destroy_workqueue(mhi_info->mhi_wq);
+	mhi_close(mhi_info->id);
+	if (mhi_info->mempool_init)
+		diagmem_exit(driver, mhi_info->mempool);
+}
+
+int diag_mhi_init()
 {
 	int i;
 	int err = 0;
@@ -726,21 +731,16 @@ int diag_mhi_init(void)
 
 	return 0;
 fail:
-	diag_mhi_exit();
+	diag_mhi_dev_exit(i);
 	return -ENOMEM;
 }
 
-void diag_mhi_exit(void)
+void diag_mhi_exit()
 {
 	int i;
-	struct diag_mhi_info *mhi_info = NULL;
 
 	for (i = 0; i < NUM_MHI_DEV; i++) {
-		mhi_info = &diag_mhi[i];
-		if (mhi_info->mhi_wq)
-			destroy_workqueue(mhi_info->mhi_wq);
-		mhi_close(mhi_info->id);
-		if (mhi_info->mempool_init)
-			diagmem_exit(driver, mhi_info->mempool);
+		diag_mhi_dev_exit(i);
 	}
 }
+

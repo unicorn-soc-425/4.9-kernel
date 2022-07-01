@@ -42,12 +42,6 @@ config SEC_SYSUP
 	help
 	  Samsung system update Feature.
 
-config SEC_FACTORY_INTERPOSER
-	bool "Samsung Factory interposer binary"
-	default n
-	help
-	  Samsung Factory interposer binary.
-
 menu "Samsung Factory Feature"
 config SEC_FACTORY
 	bool "when it comes to sec factory mode"
@@ -55,7 +49,6 @@ config SEC_FACTORY
 	select SEC_DEBUG_FORCE_ERROR
 	select SEC_PANIC_PCIE_ERR
 	select SEC_GPIO_DVS
-	select EDAC_KRYO_ARM64_PANIC_ON_CE
 	help
 	  It will support a sec factory mode
 endmenu

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -86,7 +86,7 @@ static char *ssr_domains[] = {
 };
 
 static struct bgdaemon_priv *dev;
-static unsigned int bgreset_gpio;
+static unsigned bgreset_gpio;
 static  DEFINE_MUTEX(bg_char_mutex);
 static  struct cdev              bg_cdev;
 static  struct class             *bg_class;
@@ -95,7 +95,6 @@ static  dev_t                    bg_dev;
 static  int                      device_open;
 static  void                     *handle;
 static	bool                     twm_exit;
-static	bool                     bg_app_running;
 static  struct   bgcom_open_config_type   config_type;
 static DECLARE_COMPLETION(bg_modem_down_wait);
 
@@ -173,7 +172,7 @@ static int bgdaemon_ldowork(enum ldo_task do_action)
 
 	switch (do_action) {
 	case ENABLE_LDO03:
-		ret = regulator_set_load(dev->rgltr.regldo03,
+		ret = regulator_set_optimum_mode(dev->rgltr.regldo03,
 							BGDAEMON_LDO03_NPM_VTG);
 		if (ret < 0) {
 			pr_err("Failed to request LDO-03 voltage:%d\n",
@@ -182,7 +181,7 @@ static int bgdaemon_ldowork(enum ldo_task do_action)
 		}
 		break;
 	case ENABLE_LDO09:
-		ret = regulator_set_load(dev->rgltr.regldo09,
+		ret = regulator_set_optimum_mode(dev->rgltr.regldo09,
 							BGDAEMON_LDO09_NPM_VTG);
 		if (ret < 0) {
 			pr_err("Failed to request LDO-09 voltage:%d\n",
@@ -191,7 +190,7 @@ static int bgdaemon_ldowork(enum ldo_task do_action)
 		}
 		break;
 	case DISABLE_LDO03:
-		ret = regulator_set_load(dev->rgltr.regldo03,
+		ret = regulator_set_optimum_mode(dev->rgltr.regldo03,
 							BGDAEMON_LDO03_LPM_VTG);
 		if (ret < 0) {
 			pr_err("Failed to disable LDO-03:%d\n", ret);
@@ -199,7 +198,7 @@ static int bgdaemon_ldowork(enum ldo_task do_action)
 		}
 		break;
 	case DISABLE_LDO09:
-		ret = regulator_set_load(dev->rgltr.regldo09,
+		ret = regulator_set_optimum_mode(dev->rgltr.regldo09,
 							BGDAEMON_LDO09_LPM_VTG);
 		if (ret < 0) {
 			pr_err("Failed to disable LDO-09:%d\n", ret);
@@ -307,23 +306,10 @@ static int bgchar_write_cmd(struct bg_ui_data *fui_obj_msg, int type)
 
 int bg_soft_reset(void)
 {
-	pr_debug("do BG reset using gpio %d\n", bgreset_gpio);
-	if (!gpio_is_valid(bgreset_gpio)) {
-		pr_err("gpio %d is not valid\n", bgreset_gpio);
-		return -ENXIO;
-	}
-	if (gpio_direction_output(bgreset_gpio, 1))
-		pr_err("gpio %d direction not set\n", bgreset_gpio);
-
-	/* Sleep for 50ms for hardware to detect signal as high */
-	msleep(50);
-
-	gpio_set_value(bgreset_gpio, 0);
-
-	/* Sleep for 50ms for hardware to detect signal as high */
+	/*pull down reset gpio */
+	gpio_direction_output(bgreset_gpio, 0);
 	msleep(50);
 	gpio_set_value(bgreset_gpio, 1);
-
 	return 0;
 }
 EXPORT_SYMBOL(bg_soft_reset);
@@ -382,10 +368,6 @@ static long bg_com_ioctl(struct file *filp,
 		twm_exit = true;
 		ret = 0;
 		break;
-	case BG_APP_RUNNING:
-		bg_app_running = true;
-		ret = 0;
-		break;
 	default:
 		ret = -ENOIOCTLCMD;
 	}
@@ -406,7 +388,7 @@ static int bgcom_char_close(struct inode *inode, struct file *file)
 static int bg_daemon_probe(struct platform_device *pdev)
 {
 	struct device_node *node;
-	unsigned int reset_gpio;
+	unsigned reset_gpio;
 	int ret;
 
 	node = pdev->dev.of_node;
@@ -594,16 +576,6 @@ bool is_twm_exit(void)
 	return false;
 }
 EXPORT_SYMBOL(is_twm_exit);
-
-bool is_bg_running(void)
-{
-	if (bg_app_running) {
-		bg_app_running = false;
-		return true;
-	}
-	return false;
-}
-EXPORT_SYMBOL(is_bg_running);
 
 static struct notifier_block ssr_modem_nb = {
 	.notifier_call = ssr_modem_cb,

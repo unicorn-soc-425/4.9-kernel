@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -21,6 +21,8 @@ void msm_property_init(struct msm_property_info *info,
 		uint32_t blob_count,
 		uint32_t state_size)
 {
+	int i;
+
 	/* prevent access if any of these are NULL */
 	if (!base || !dev || !property_array || !property_data) {
 		property_count = 0;
@@ -58,6 +60,10 @@ void msm_property_init(struct msm_property_info *info,
 				0,
 				sizeof(struct msm_property_data) *
 				property_count);
+		INIT_LIST_HEAD(&info->dirty_list);
+
+		for (i = 0; i < property_count; ++i)
+			INIT_LIST_HEAD(&property_data[i].dirty_node);
 	}
 }
 
@@ -66,6 +72,9 @@ void msm_property_destroy(struct msm_property_info *info)
 	if (!info)
 		return;
 
+	/* reset dirty list */
+	INIT_LIST_HEAD(&info->dirty_list);
+
 	/* free state cache */
 	while (info->state_cache_size > 0)
 		kfree(info->state_cache[--(info->state_cache_size)]);
@@ -73,25 +82,24 @@ void msm_property_destroy(struct msm_property_info *info)
 	mutex_destroy(&info->property_lock);
 }
 
-int msm_property_pop_dirty(struct msm_property_info *info,
-		struct msm_property_state *property_state)
+int msm_property_pop_dirty(struct msm_property_info *info)
 {
 	struct list_head *item;
 	int rc = 0;
 
-	if (!info || !property_state || !property_state->values) {
-		DRM_ERROR("invalid argument(s)\n");
+	if (!info) {
+		DRM_ERROR("invalid info\n");
 		return -EINVAL;
 	}
 
 	mutex_lock(&info->property_lock);
-	if (list_empty(&property_state->dirty_list)) {
+	if (list_empty(&info->dirty_list)) {
 		rc = -EAGAIN;
 	} else {
-		item = property_state->dirty_list.next;
+		item = info->dirty_list.next;
 		list_del_init(item);
-		rc = container_of(item, struct msm_property_value, dirty_node)
-			- property_state->values;
+		rc = container_of(item, struct msm_property_data, dirty_node)
+			- info->property_data;
 		DRM_DEBUG_KMS("property %d dirty\n", rc);
 	}
 	mutex_unlock(&info->property_lock);
@@ -104,58 +112,31 @@ int msm_property_pop_dirty(struct msm_property_info *info,
  *                                   This function doesn't mutex protect the
  *                                   dirty linked list.
  * @info: Pointer to property info container struct
- * @property_state: Pointer to property state container struct
  * @property_idx: Property index
  */
 static void _msm_property_set_dirty_no_lock(
 		struct msm_property_info *info,
-		struct msm_property_state *property_state,
 		uint32_t property_idx)
 {
-	if (!info || !property_state || !property_state->values ||
-			property_idx >= info->property_count) {
-		DRM_ERROR("invalid argument(s), idx %u\n", property_idx);
+	if (!info || property_idx >= info->property_count) {
+		DRM_ERROR("invalid argument(s), info %pK, idx %u\n",
+				info, property_idx);
 		return;
 	}
 
 	/* avoid re-inserting if already dirty */
-	if (!list_empty(&property_state->values[property_idx].dirty_node)) {
+	if (!list_empty(&info->property_data[property_idx].dirty_node)) {
 		DRM_DEBUG_KMS("property %u already dirty\n", property_idx);
 		return;
 	}
 
-	list_add_tail(&property_state->values[property_idx].dirty_node,
-			&property_state->dirty_list);
+	list_add_tail(&info->property_data[property_idx].dirty_node,
+			&info->dirty_list);
 }
 
-bool msm_property_is_dirty(
-		struct msm_property_info *info,
-		struct msm_property_state *property_state,
-		uint32_t property_idx)
-{
-	if (!info || !property_state || !property_state->values ||
-			property_idx >= info->property_count) {
-		DRM_ERROR("invalid argument(s), idx %u\n", property_idx);
-		return false;
-	}
-
-	return !list_empty(&property_state->values[property_idx].dirty_node);
-}
-
-/**
- * _msm_property_install_integer - install standard drm range property
- * @info: Pointer to property info container struct
- * @name: Property name
- * @flags: Other property type flags, e.g. DRM_MODE_PROP_IMMUTABLE
- * @min: Min property value
- * @max: Max property value
- * @init: Default Property value
- * @property_idx: Property index
- * @force_dirty: Whether or not to filter 'dirty' status on unchanged values
- */
-static void _msm_property_install_integer(struct msm_property_info *info,
+void msm_property_install_range(struct msm_property_info *info,
 		const char *name, int flags, uint64_t min, uint64_t max,
-		uint64_t init, uint32_t property_idx, bool force_dirty)
+		uint64_t init, uint32_t property_idx)
 {
 	struct drm_property **prop;
 
@@ -181,7 +162,6 @@ static void _msm_property_install_integer(struct msm_property_info *info,
 
 		/* save init value for later */
 		info->property_data[property_idx].default_value = init;
-		info->property_data[property_idx].force_dirty = force_dirty;
 
 		/* always attach property, if created */
 		if (*prop) {
@@ -189,22 +169,6 @@ static void _msm_property_install_integer(struct msm_property_info *info,
 			++info->install_count;
 		}
 	}
-}
-
-void msm_property_install_range(struct msm_property_info *info,
-		const char *name, int flags, uint64_t min, uint64_t max,
-		uint64_t init, uint32_t property_idx)
-{
-	_msm_property_install_integer(info, name, flags,
-			min, max, init, property_idx, false);
-}
-
-void msm_property_install_volatile_range(struct msm_property_info *info,
-		const char *name, int flags, uint64_t min, uint64_t max,
-		uint64_t init, uint32_t property_idx)
-{
-	_msm_property_install_integer(info, name, flags,
-			min, max, init, property_idx, true);
 }
 
 void msm_property_install_rotation(struct msm_property_info *info,
@@ -234,7 +198,6 @@ void msm_property_install_rotation(struct msm_property_info *info,
 
 		/* save init value for later */
 		info->property_data[property_idx].default_value = 0;
-		info->property_data[property_idx].force_dirty = false;
 
 		/* always attach property, if created */
 		if (*prop) {
@@ -247,7 +210,7 @@ void msm_property_install_rotation(struct msm_property_info *info,
 void msm_property_install_enum(struct msm_property_info *info,
 		const char *name, int flags, int is_bitmask,
 		const struct drm_prop_enum_list *values, int num_values,
-		uint32_t property_idx)
+		uint32_t property_idx, uint64_t default_value)
 {
 	struct drm_property **prop;
 
@@ -280,19 +243,11 @@ void msm_property_install_enum(struct msm_property_info *info,
 		}
 
 		/* save init value for later */
-		info->property_data[property_idx].default_value = 0;
-		info->property_data[property_idx].force_dirty = false;
-
-		/* select first defined value for enums */
-		if (!is_bitmask)
-			info->property_data[property_idx].default_value =
-				values->type;
+		info->property_data[property_idx].default_value = default_value;
 
 		/* always attach property, if created */
 		if (*prop) {
-			drm_object_attach_property(info->base, *prop,
-					info->property_data
-					[property_idx].default_value);
+			drm_object_attach_property(info->base, *prop, 0);
 			++info->install_count;
 		}
 	}
@@ -326,7 +281,6 @@ void msm_property_install_blob(struct msm_property_info *info,
 
 		/* save init value for later */
 		info->property_data[property_idx].default_value = 0;
-		info->property_data[property_idx].force_dirty = true;
 
 		/* always attach property, if created */
 		if (*prop) {
@@ -386,76 +340,47 @@ int msm_property_index(struct msm_property_info *info,
 	return rc;
 }
 
-int msm_property_set_dirty(struct msm_property_info *info,
-		struct msm_property_state *property_state,
-		int property_idx)
-{
-	if (!info || !property_state || !property_state->values) {
-		DRM_ERROR("invalid argument(s)\n");
-		return -EINVAL;
-	}
-	mutex_lock(&info->property_lock);
-	_msm_property_set_dirty_no_lock(info, property_state, property_idx);
-	mutex_unlock(&info->property_lock);
-	return 0;
-}
-
 int msm_property_atomic_set(struct msm_property_info *info,
-		struct msm_property_state *property_state,
+		uint64_t *property_values,
+		struct drm_property_blob **property_blobs,
 		struct drm_property *property, uint64_t val)
 {
 	struct drm_property_blob *blob;
 	int property_idx, rc = -EINVAL;
 
-	if (!info || !property_state) {
-		DRM_ERROR("invalid argument(s)\n");
-		return -EINVAL;
-	}
-
 	property_idx = msm_property_index(info, property);
-	if ((property_idx == -EINVAL) || !property_state->values) {
+	if (!info || (property_idx == -EINVAL) || !property_values) {
 		DRM_ERROR("invalid argument(s)\n");
 	} else {
 		/* extra handling for incoming properties */
 		mutex_lock(&info->property_lock);
 		if ((property->flags & DRM_MODE_PROP_BLOB) &&
-			(property_idx < info->blob_count)) {
-
-			/* need to clear previous ref */
-			if (property_state->values[property_idx].blob)
-				drm_property_unreference_blob(
-					property_state->values[
-						property_idx].blob);
-
+			(property_idx < info->blob_count) &&
+			property_blobs) {
 			/* DRM lookup also takes a reference */
 			blob = drm_property_lookup_blob(info->dev,
 				(uint32_t)val);
-			if (val && !blob) {
-				DRM_ERROR("prop %d blob id 0x%llx not found\n",
-						property_idx, val);
+			if (!blob) {
+				DRM_ERROR("blob not found\n");
 				val = 0;
 			} else {
-				if (blob) {
-					DBG("Blob %u saved", blob->base.id);
-					val = blob->base.id;
-				}
+				DBG("Blob %u saved", blob->base.id);
+				val = blob->base.id;
 
-				/* save the new blob */
-				property_state->values[property_idx].blob =
-					blob;
+				/* save blob - need to clear previous ref */
+				if (property_blobs[property_idx])
+					drm_property_unreference_blob(
+						property_blobs[property_idx]);
+				property_blobs[property_idx] = blob;
 			}
 		}
 
 		/* update value and flag as dirty */
-		if (property_state->values[property_idx].value != val ||
-				info->property_data[property_idx].force_dirty) {
-			property_state->values[property_idx].value = val;
-			_msm_property_set_dirty_no_lock(info, property_state,
-					property_idx);
-
-			DBG("%s - %lld", property->name, val);
-		}
+		property_values[property_idx] = val;
+		_msm_property_set_dirty_no_lock(info, property_idx);
 		mutex_unlock(&info->property_lock);
+
+		DBG("%s - %lld", property->name, val);
 		rc = 0;
 	}
 
@@ -463,18 +388,18 @@ int msm_property_atomic_set(struct msm_property_info *info,
 }
 
 int msm_property_atomic_get(struct msm_property_info *info,
-		struct msm_property_state *property_state,
+		uint64_t *property_values,
+		struct drm_property_blob **property_blobs,
 		struct drm_property *property, uint64_t *val)
 {
 	int property_idx, rc = -EINVAL;
 
 	property_idx = msm_property_index(info, property);
-	if (!info || (property_idx == -EINVAL) ||
-			!property_state->values || !val) {
-		DRM_DEBUG("Invalid argument(s)\n");
+	if (!info || (property_idx == -EINVAL) || !property_values || !val) {
+		DRM_ERROR("invalid argument(s)\n");
 	} else {
 		mutex_lock(&info->property_lock);
-		*val = property_state->values[property_idx].value;
+		*val = property_values[property_idx];
 		mutex_unlock(&info->property_lock);
 		rc = 0;
 	}
@@ -524,8 +449,8 @@ static void _msm_property_free_state(struct msm_property_info *info, void *st)
 }
 
 void msm_property_reset_state(struct msm_property_info *info, void *state,
-		struct msm_property_state *property_state,
-		struct msm_property_value *property_values)
+		uint64_t *property_values,
+		struct drm_property_blob **property_blobs)
 {
 	uint32_t i;
 
@@ -537,29 +462,24 @@ void msm_property_reset_state(struct msm_property_info *info, void *state,
 	if (state)
 		memset(state, 0, info->state_size);
 
-	if (property_state) {
-		property_state->property_count = info->property_count;
-		property_state->values = property_values;
-		INIT_LIST_HEAD(&property_state->dirty_list);
-	}
-
 	/*
 	 * Assign default property values. This helper is mostly used
 	 * to initialize newly created state objects.
 	 */
 	if (property_values)
-		for (i = 0; i < info->property_count; ++i) {
-			property_values[i].value =
+		for (i = 0; i < info->property_count; ++i)
+			property_values[i] =
 				info->property_data[i].default_value;
-			property_values[i].blob = NULL;
-			INIT_LIST_HEAD(&property_values[i].dirty_node);
-		}
+
+	if (property_blobs)
+		for (i = 0; i < info->blob_count; ++i)
+			property_blobs[i] = 0;
 }
 
 void msm_property_duplicate_state(struct msm_property_info *info,
 		void *old_state, void *state,
-		struct msm_property_state *property_state,
-		struct msm_property_value *property_values)
+		uint64_t *property_values,
+		struct drm_property_blob **property_blobs)
 {
 	uint32_t i;
 
@@ -570,24 +490,17 @@ void msm_property_duplicate_state(struct msm_property_info *info,
 
 	memcpy(state, old_state, info->state_size);
 
-	if (!property_state)
-		return;
-
-	INIT_LIST_HEAD(&property_state->dirty_list);
-	property_state->values = property_values;
-
-	if (property_state->values)
-		/* add ref count for blobs and initialize dirty nodes */
-		for (i = 0; i < info->property_count; ++i) {
-			if (property_state->values[i].blob)
-				drm_property_reference_blob(
-						property_state->values[i].blob);
-			INIT_LIST_HEAD(&property_state->values[i].dirty_node);
-		}
+	if (property_blobs) {
+		/* add ref count for blobs */
+		for (i = 0; i < info->blob_count; ++i)
+			if (property_blobs[i])
+				drm_property_reference_blob(property_blobs[i]);
+	}
 }
 
 void msm_property_destroy_state(struct msm_property_info *info, void *state,
-		struct msm_property_state *property_state)
+		uint64_t *property_values,
+		struct drm_property_blob **property_blobs)
 {
 	uint32_t i;
 
@@ -595,21 +508,19 @@ void msm_property_destroy_state(struct msm_property_info *info, void *state,
 		DRM_ERROR("invalid argument(s)\n");
 		return;
 	}
-	if (property_state && property_state->values) {
+	if (property_blobs) {
 		/* remove ref count for blobs */
-		for (i = 0; i < info->property_count; ++i)
-			if (property_state->values[i].blob) {
+		for (i = 0; i < info->blob_count; ++i)
+			if (property_blobs[i])
 				drm_property_unreference_blob(
-						property_state->values[i].blob);
-				property_state->values[i].blob = NULL;
-			}
+						property_blobs[i]);
 	}
 
 	_msm_property_free_state(info, state);
 }
 
 void *msm_property_get_blob(struct msm_property_info *info,
-		struct msm_property_state *property_state,
+		struct drm_property_blob **property_blobs,
 		size_t *byte_len,
 		uint32_t property_idx)
 {
@@ -617,11 +528,10 @@ void *msm_property_get_blob(struct msm_property_info *info,
 	size_t len = 0;
 	void *rc = 0;
 
-	if (!info || !property_state || !property_state->values ||
-			(property_idx >= info->blob_count)) {
+	if (!info || !property_blobs || (property_idx >= info->blob_count)) {
 		DRM_ERROR("invalid argument(s)\n");
 	} else {
-		blob = property_state->values[property_idx].blob;
+		blob = property_blobs[property_idx];
 		if (blob) {
 			len = blob->length;
 			rc = &blob->data;
@@ -680,15 +590,14 @@ exit:
 }
 
 int msm_property_set_property(struct msm_property_info *info,
-		struct msm_property_state *property_state,
+		uint64_t *property_values,
 		uint32_t property_idx,
 		uint64_t val)
 {
 	int rc = -EINVAL;
 
 	if (!info || (property_idx >= info->property_count) ||
-			property_idx < info->blob_count ||
-			!property_state || !property_state->values) {
+			property_idx < info->blob_count || !property_values) {
 		DRM_ERROR("invalid argument(s)\n");
 	} else {
 		struct drm_property *drm_prop;
@@ -696,7 +605,8 @@ int msm_property_set_property(struct msm_property_info *info,
 		mutex_lock(&info->property_lock);
 
 		/* update cached value */
-		property_state->values[property_idx].value = val;
+		if (property_values)
+			property_values[property_idx] = val;
 
 		/* update the new default value for immutables */
 		drm_prop = info->property_array[property_idx];

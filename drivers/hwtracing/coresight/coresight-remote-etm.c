@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -21,6 +21,7 @@
 #include <linux/sysfs.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_coresight.h>
 #include <linux/coresight.h>
 #include "coresight-qmi.h"
 
@@ -33,7 +34,7 @@ static int boot_enable;
 #endif
 
 module_param_named(
-	boot_enable, boot_enable, int, 0444
+	boot_enable, boot_enable, int, S_IRUGO
 );
 
 struct remote_etm_drvdata {
@@ -52,8 +53,7 @@ struct remote_etm_drvdata {
 	int				traceid;
 };
 
-static int remote_etm_enable(struct coresight_device *csdev,
-			     struct perf_event *event, u32 mode)
+static int remote_etm_enable(struct coresight_device *csdev)
 {
 	struct remote_etm_drvdata *drvdata =
 		dev_get_drvdata(csdev->dev.parent);
@@ -116,8 +116,7 @@ err:
 	return ret;
 }
 
-static void remote_etm_disable(struct coresight_device *csdev,
-			       struct perf_event *event)
+static void remote_etm_disable(struct coresight_device *csdev)
 {
 	struct remote_etm_drvdata *drvdata =
 		 dev_get_drvdata(csdev->dev.parent);
@@ -362,15 +361,11 @@ static int remote_etm_remove(struct platform_device *pdev)
 {
 	struct remote_etm_drvdata *drvdata = platform_get_drvdata(pdev);
 
-	qmi_svc_event_notifier_unregister(CORESIGHT_QMI_SVC_ID,
-					  CORESIGHT_QMI_VERSION,
-					  drvdata->inst_id,
-					  &drvdata->nb);
 	coresight_unregister(drvdata->csdev);
 	return 0;
 }
 
-static const struct of_device_id remote_etm_match[] = {
+static struct of_device_id remote_etm_match[] = {
 	{.compatible = "qcom,coresight-remote-etm"},
 	{}
 };

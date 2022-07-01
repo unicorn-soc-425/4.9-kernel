@@ -582,7 +582,7 @@ static struct pinctrl_ops tb10x_pinctrl_ops = {
 	.get_group_name   = tb10x_get_group_name,
 	.get_group_pins   = tb10x_get_group_pins,
 	.dt_node_to_map   = tb10x_dt_node_to_map,
-	.dt_free_map      = pinctrl_utils_free_map,
+	.dt_free_map      = pinctrl_utils_dt_free_map,
 };
 
 static int tb10x_get_functions_count(struct pinctrl_dev *pctl)
@@ -759,7 +759,7 @@ static struct pinctrl_desc tb10x_pindesc = {
 static int tb10x_pinctrl_probe(struct platform_device *pdev)
 {
 	int ret = -EINVAL;
-	struct resource *mem;
+	struct resource *mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	struct device *dev = &pdev->dev;
 	struct device_node *of_node = dev->of_node;
 	struct device_node *child;
@@ -768,6 +768,11 @@ static int tb10x_pinctrl_probe(struct platform_device *pdev)
 
 	if (!of_node) {
 		dev_err(dev, "No device tree node found.\n");
+		return -EINVAL;
+	}
+
+	if (!mem) {
+		dev_err(dev, "No memory resource defined.\n");
 		return -EINVAL;
 	}
 
@@ -782,7 +787,6 @@ static int tb10x_pinctrl_probe(struct platform_device *pdev)
 	state->pinfuncs = (struct tb10x_of_pinfunc *)(state + 1);
 	mutex_init(&state->mutex);
 
-	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	state->base = devm_ioremap_resource(dev, mem);
 	if (IS_ERR(state->base)) {
 		ret = PTR_ERR(state->base);
@@ -806,10 +810,10 @@ static int tb10x_pinctrl_probe(struct platform_device *pdev)
 		}
 	}
 
-	state->pctl = devm_pinctrl_register(dev, &tb10x_pindesc, state);
-	if (IS_ERR(state->pctl)) {
+	state->pctl = pinctrl_register(&tb10x_pindesc, dev, state);
+	if (!state->pctl) {
 		dev_err(dev, "could not register TB10x pin driver\n");
-		ret = PTR_ERR(state->pctl);
+		ret = -EINVAL;
 		goto fail;
 	}
 
@@ -824,6 +828,7 @@ static int tb10x_pinctrl_remove(struct platform_device *pdev)
 {
 	struct tb10x_pinctrl *state = platform_get_drvdata(pdev);
 
+	pinctrl_unregister(state->pctl);
 	mutex_destroy(&state->mutex);
 
 	return 0;
@@ -842,6 +847,7 @@ static struct platform_driver tb10x_pinctrl_pdrv = {
 	.driver  = {
 		.name  = "tb10x_pinctrl",
 		.of_match_table = of_match_ptr(tb10x_pinctrl_dt_ids),
+		.owner = THIS_MODULE
 	}
 };
 

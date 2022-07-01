@@ -6,7 +6,7 @@
  *
 */
 
- /* usb notify layer v3.2 */
+ /* usb notify layer v3.0 */
 
 #include <linux/module.h>
 #include <linux/types.h>
@@ -64,8 +64,6 @@ static ssize_t mode_store(
 	size_t ret = -ENOMEM;
 	int sret = 0;
 
-	if (size < strlen(buf))
-		goto error;
 	mode = kzalloc(size+1, GFP_KERNEL);
 	if (!mode)
 		goto error;
@@ -119,9 +117,6 @@ static ssize_t booster_store(
 	char *booster;
 	size_t ret = -ENOMEM;
 	int sret = 0;
-
-	if (size < strlen(buf))
-		goto error;
 
 	booster = kzalloc(size+1, GFP_KERNEL);
 	if (!booster)

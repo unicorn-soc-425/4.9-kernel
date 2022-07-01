@@ -37,6 +37,7 @@ struct cp2_lock_req {
 	u32 lock;
 } __attribute__ ((__packed__));
 
+
 struct mem_prot_info {
 	phys_addr_t addr;
 	u64 size;
@@ -45,13 +46,13 @@ struct mem_prot_info {
 #define MEM_PROT_ASSIGN_ID		0x16
 #define MEM_PROTECT_LOCK_ID2		0x0A
 #define MEM_PROTECT_LOCK_ID2_FLAT	0x11
-#define V2_CHUNK_SIZE           SZ_1M
+#define V2_CHUNK_SIZE		SZ_1M
 #define FEATURE_ID_CP 12
 
 struct dest_vm_and_perm_info {
 	u32 vm;
 	u32 perm;
-	u64 ctx;
+	u32 *ctx;
 	u32 ctx_size;
 };
 
@@ -93,6 +94,8 @@ static int secure_buffer_change_chunk(u32 chunks,
 	return ret;
 }
 
+
+
 static int secure_buffer_change_table(struct sg_table *table, int lock)
 {
 	int i, j;
@@ -112,7 +115,6 @@ static int secure_buffer_change_table(struct sg_table *table, int lock)
 		 */
 		u32 base;
 		u64 tmp = sg_dma_address(sg);
-
 		WARN((tmp >> 32) & 0xffffffff,
 			"%s: there are ones in the upper 32 bits of the sg at %p! They will be truncated! Address: 0x%llx\n",
 			__func__, sg, tmp);
@@ -145,7 +147,7 @@ static int secure_buffer_change_table(struct sg_table *table, int lock)
 		dmac_flush_range(chunk_list,
 			(void *)chunk_list + chunk_list_len);
 
-		ret = secure_buffer_change_chunk(chunk_list_phys,
+		ret = secure_buffer_change_chunk(virt_to_phys(chunk_list),
 				nchunks, V2_CHUNK_SIZE, lock);
 
 		if (!ret) {
@@ -174,6 +176,7 @@ int msm_secure_table(struct sg_table *table)
 	mutex_unlock(&secure_buffer_mutex);
 
 	return ret;
+
 }
 
 int msm_unsecure_table(struct sg_table *table)
@@ -183,8 +186,8 @@ int msm_unsecure_table(struct sg_table *table)
 	mutex_lock(&secure_buffer_mutex);
 	ret = secure_buffer_change_table(table, 0);
 	mutex_unlock(&secure_buffer_mutex);
-
 	return ret;
+
 }
 
 static struct dest_vm_and_perm_info *
@@ -207,7 +210,7 @@ populate_dest_info(int *dest_vmids, int nelements, int *dest_perms,
 	for (i = 0; i < nelements; i++) {
 		dest_info[i].vm = dest_vmids[i];
 		dest_info[i].perm = dest_perms[i];
-		dest_info[i].ctx = 0x0;
+		dest_info[i].ctx = NULL;
 		dest_info[i].ctx_size = 0;
 	}
 
@@ -283,7 +286,7 @@ int hyp_assign_table(struct sg_table *table,
 			int *dest_vmids, int *dest_perms,
 			int dest_nelems)
 {
-	int ret = 0;
+	int ret;
 	struct scm_desc desc = {0};
 	u32 *source_vm_copy;
 	size_t source_vm_copy_size;
@@ -337,34 +340,43 @@ out_free_source:
 	kfree(source_vm_copy);
 	return ret;
 }
-EXPORT_SYMBOL(hyp_assign_table);
 
 int hyp_assign_phys(phys_addr_t addr, u64 size, u32 *source_vm_list,
 			int source_nelems, int *dest_vmids,
 			int *dest_perms, int dest_nelems)
 {
-	struct sg_table table;
+	struct sg_table *table;
 	int ret;
 
-	ret = sg_alloc_table(&table, 1, GFP_KERNEL);
+	table = kzalloc(sizeof(struct sg_table), GFP_KERNEL);
+	if (!table)
+		return -ENOMEM;
+	ret = sg_alloc_table(table, 1, GFP_KERNEL);
 	if (ret)
-		return ret;
+		goto err1;
 
-	sg_set_page(table.sgl, phys_to_page(addr), size, 0);
+	sg_set_page(table->sgl, phys_to_page(addr), size, 0);
 
-	ret = hyp_assign_table(&table, source_vm_list, source_nelems,
-			       dest_vmids, dest_perms, dest_nelems);
+	ret = hyp_assign_table(table, source_vm_list, source_nelems, dest_vmids,
+						dest_perms, dest_nelems);
+	if (ret)
+		goto err2;
 
-	sg_free_table(&table);
+	return ret;
+err2:
+	sg_free_table(table);
+err1:
+	kfree(table);
 	return ret;
 }
-EXPORT_SYMBOL(hyp_assign_phys);
 
 const char *msm_secure_vmid_to_string(int secure_vmid)
 {
 	switch (secure_vmid) {
 	case VMID_HLOS:
 		return "VMID_HLOS";
+	case VMID_ADSP:
+		return "VMID_ADSP";
 	case VMID_CP_TOUCH:
 		return "VMID_CP_TOUCH";
 	case VMID_CP_BITSTREAM:
@@ -389,14 +401,6 @@ const char *msm_secure_vmid_to_string(int secure_vmid)
 		return "VMID_WLAN";
 	case VMID_WLAN_CE:
 		return "VMID_WLAN_CE";
-	case VMID_CP_CAMERA_PREVIEW:
-		return "VMID_CP_CAMERA_PREVIEW";
-	case VMID_CP_SPSS_SP:
-		return "VMID_CP_SPSS_SP";
-	case VMID_CP_SPSS_SP_SHARED:
-		return "VMID_CP_SPSS_SP_SHARED";
-	case VMID_CP_SPSS_HLOS_SHARED:
-		return "VMID_CP_SPSS_HLOS_SHARED";
 	case VMID_INVAL:
 		return "VMID_INVAL";
 	default:
@@ -409,10 +413,11 @@ const char *msm_secure_vmid_to_string(int secure_vmid)
 
 bool msm_secure_v2_is_supported(void)
 {
+	int version = scm_get_feat_version(FEATURE_ID_CP);
+
 	/*
 	 * if the version is < 1.1.0 then dynamic buffer allocation is
 	 * not supported
 	 */
-	return (scm_get_feat_version(FEATURE_ID_CP) >=
-			MAKE_CP_VERSION(1, 1, 0));
+	return version >= MAKE_CP_VERSION(1, 1, 0);
 }

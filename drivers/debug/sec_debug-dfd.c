@@ -11,8 +11,6 @@
  * GNU General Public License for more details.
  */
 
-#define pr_fmt(fmt)     KBUILD_MODNAME ":%s: " fmt, __func__
-
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/ctype.h>
@@ -23,8 +21,7 @@
 #include <linux/circ_buf.h>
 
 static int dfd_enable(const char *val, struct kernel_param *kp);
-module_param_call(enable, dfd_enable, NULL, NULL,
-		  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+module_param_call(enable, dfd_enable, NULL, NULL, 0644);
 
 /* Double free detector(dfd) can use lots of memory because
  * it needs to hold on the freed slabs, otherwise
@@ -126,7 +123,7 @@ static int dfd_flush(void)
 	cnt = CIRC_CNT(dfd_node_list.head, dfd_node_list.tail,
 		KFREE_CIRC_BUF_SIZE);
 	spin_unlock_irqrestore(&dfd_list_lock, flags);
-	pr_debug("cnt=%lu\n", cnt);
+	pr_debug("%s: cnt=%lu\n", __func__, cnt);
 
 do_flush:
 	while (cnt) {
@@ -168,11 +165,11 @@ static int dfd_enable(const char *val, struct kernel_param *kp)
 {
 	if (!strncmp(val, "1", 1)) {
 		dfd_disabled = 0;
-		pr_info("double free detection is enabled\n");
+		pr_info("%s: double free detection is enabled\n", __func__);
 	} else if (!strncmp(val, "0", 1)) {
 		dfd_disabled = 1;
 		dfd_flush();
-		pr_info("double free detection is disabled\n");
+		pr_info("%s: double free detection is disabled\n", __func__);
 	}
 
 	return 0;
@@ -211,7 +208,7 @@ int dfd_shrink(struct shrinker *shrinker, struct shrink_control *sc)
 	if (nr > nr_objs)
 		nr = nr_objs;
 
-	pr_debug("nr_objs=%lu\n", nr_objs);
+	pr_debug("%s: nr_objs=%lu\n", __func__, nr_objs);
 	while (nr) {
 		unsigned long cnt;
 		void *tofree = NULL;
@@ -234,7 +231,7 @@ int dfd_shrink(struct shrinker *shrinker, struct shrink_control *sc)
 		KFREE_CIRC_BUF_SIZE);
 	spin_unlock_irqrestore(&dfd_list_lock, flags);
 	if (nr_objs == 0) {
-		pr_info("nothing more to reclaim from here!\n");
+		pr_info("%s: nothing more to reclaim from here!\n", __func__);
 		nr_objs = -1;
 	}
 
@@ -329,8 +326,8 @@ void *kfree_hook(void *p, void *caller)
 	if (!virt_addr_valid(addr)) {
 		/* there are too many NULL pointers so don't print for NULL */
 		if (addr)
-			pr_debug("trying to free an invalid addr %lx" \
-				"from %pS\n", addr, caller);
+			pr_debug("%s: trying to free an invalid addr %lx "\
+				"from %pS\n", __func__, addr, caller);
 		return NULL;
 	}
 
@@ -342,7 +339,7 @@ void *kfree_hook(void *p, void *caller)
 	spin_lock_irqsave(&dfd_list_lock, flags);
 
 	if (dfd_node_list.head == 0)
-		pr_debug("circular buffer head rounded to zero.");
+		pr_debug("%s: circular buffer head rounded to zero.", __func__);
 
 	/* We can detect all the double free in the circular buffer time frame
 	 * if we scan the whole circular buffer all the time, but to minimize
@@ -353,13 +350,13 @@ void *kfree_hook(void *p, void *caller)
 		 * value, so search the whole circ buf for an actual match */
 		match = circ_buf_lookup(&dfd_node_list, p);
 		if (!match) {
-			pr_debug("magic set but not in circ buf\n");
+			pr_debug("%s: magic set but not in circ buf\n", __func__);
 		}
 	}
 
 	if (match) {
-		pr_err("0x%08lx was already freed by %pS()\n",
-			(unsigned long)p, match->caller);
+		pr_err("%s: 0x%08lx was already freed by %pS()\n",
+			__func__, (unsigned long)p, match->caller);
 		spin_unlock_irqrestore(&dfd_list_lock, flags);
 		if (dfd_panic)
 			panic("double free detected!");
@@ -388,9 +385,9 @@ void *kfree_hook(void *p, void *caller)
 	circ_buf_put(&dfd_node_list, &entry);
 	if (tofree) {
 		if (unlikely(!dfd_check_magic_all(tofree))) {
-			pr_emerg("Use after free detected on the node " \
-				"0x%lx which was freed by %pS.\n", \
-				(unsigned long)tofree,
+			pr_emerg("\n%s: Use after free detected on the node "\
+				"0x%lx which was freed by %pS.\n",\
+				__func__, (unsigned long)tofree,
 				pentry->caller);
 			__hexdump((void *)tofree, KMALLOC_MIN_SIZE);
 			pr_err("\n");

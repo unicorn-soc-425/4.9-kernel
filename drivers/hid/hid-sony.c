@@ -61,11 +61,11 @@
 #define NAVIGATION_CONTROLLER (NAVIGATION_CONTROLLER_USB |\
 				NAVIGATION_CONTROLLER_BT)
 #define DUALSHOCK4_CONTROLLER (DUALSHOCK4_CONTROLLER_USB |\
-				DUALSHOCK4_CONTROLLER_BT | \
+                DUALSHOCK4_CONTROLLER_BT | \
 				DUALSHOCK4_DONGLE)
 #define SONY_LED_SUPPORT (SIXAXIS_CONTROLLER | BUZZ_CONTROLLER |\
 				DUALSHOCK4_CONTROLLER | MOTION_CONTROLLER |\
-				NAVIGATION_CONTROLLER)
++				NAVIGATION_CONTROLLER)
 #define SONY_BATTERY_SUPPORT (SIXAXIS_CONTROLLER | DUALSHOCK4_CONTROLLER |\
 				MOTION_CONTROLLER_BT | NAVIGATION_CONTROLLER)
 #define SONY_FF_SUPPORT (SIXAXIS_CONTROLLER | DUALSHOCK4_CONTROLLER |\
@@ -74,7 +74,6 @@
 			MOTION_CONTROLLER_BT | NAVIGATION_CONTROLLER_BT)
 
 #define MAX_LEDS 4
-
 
 /* PS/3 Motion controller */
 static u8 motion_rdesc[] = {
@@ -299,7 +298,7 @@ static const unsigned int buzz_keymap[] = {
 	/*
 	 * The controller has 4 remote buzzers, each with one LED and 5
 	 * buttons.
-	 *
+	 * 
 	 * We use the mapping chosen by the controller, which is:
 	 *
 	 * Key          Offset
@@ -541,8 +540,7 @@ struct sony_sc {
 	struct work_struct hotplug_worker;
 	struct work_struct state_worker;
 	void (*send_output_report)(struct sony_sc *);
-	struct power_supply *battery;
-	struct power_supply_desc battery_desc;
+	struct power_supply battery;
 	int device_id;
 	u8 *output_report_dmabuf;
 
@@ -594,7 +592,7 @@ static ssize_t ds4_show_poll_interval(struct device *dev,
 				struct device_attribute
 				*attr, char *buf)
 {
-	struct hid_device *hdev = to_hid_device(dev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
 	struct sony_sc *sc = hid_get_drvdata(hdev);
 
 	return snprintf(buf, PAGE_SIZE, "%i\n", sc->ds4_bt_poll_interval);
@@ -604,7 +602,7 @@ static ssize_t ds4_store_poll_interval(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
 {
-	struct hid_device *hdev = to_hid_device(dev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
 	struct sony_sc *sc = hid_get_drvdata(hdev);
 	unsigned long flags;
 	u8 interval;
@@ -807,7 +805,7 @@ static u8 *sony_report_fixup(struct hid_device *hdev, u8 *rdesc,
 		unsigned int *rsize)
 {
 	struct sony_sc *sc = hid_get_drvdata(hdev);
-
+	
 	if (sc->quirks & (SINO_LITE_CONTROLLER | FUTUREMAX_DANCE_MAT))
 		return rdesc;
 
@@ -1221,7 +1219,7 @@ static int sony_mapping(struct hid_device *hdev, struct hid_input *hi,
 
 	if (sc->quirks & PS3REMOTE)
 		return ps3remote_mapping(hdev, hi, field, usage, bit, max);
-
+	
 	if (sc->quirks & NAVIGATION_CONTROLLER)
 		return navigation_mapping(hdev, hi, field, usage, bit, max);
 
@@ -1444,7 +1442,7 @@ static int sixaxis_set_operational_usb(struct hid_device *hdev)
 		hid_info(hdev, "can't set operational mode: step 3, ignoring\n");
 		ret = 0;
 	}
-
+ 
 out:
 	kfree(buf);
 
@@ -1723,7 +1721,7 @@ static void sony_led_set_brightness(struct led_classdev *led,
 				    enum led_brightness value)
 {
 	struct device *dev = led->dev->parent;
-	struct hid_device *hdev = to_hid_device(dev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
 	struct sony_sc *drv_data;
 
 	int n;
@@ -1765,7 +1763,7 @@ static void sony_led_set_brightness(struct led_classdev *led,
 static enum led_brightness sony_led_get_brightness(struct led_classdev *led)
 {
 	struct device *dev = led->dev->parent;
-	struct hid_device *hdev = to_hid_device(dev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
 	struct sony_sc *drv_data;
 
 	int n;
@@ -1788,7 +1786,7 @@ static int sony_led_blink_set(struct led_classdev *led, unsigned long *delay_on,
 				unsigned long *delay_off)
 {
 	struct device *dev = led->dev->parent;
-	struct hid_device *hdev = to_hid_device(dev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
 	struct sony_sc *drv_data = hid_get_drvdata(hdev);
 	int n;
 	u8 new_on, new_off;
@@ -2185,7 +2183,7 @@ static int sony_battery_get_property(struct power_supply *psy,
 				     enum power_supply_property psp,
 				     union power_supply_propval *val)
 {
-	struct sony_sc *sc = power_supply_get_drvdata(psy);
+	struct sony_sc *sc = container_of(psy, struct sony_sc, battery);
 	unsigned long flags;
 	int ret = 0;
 	u8 battery_charging, battery_capacity, cable_state;
@@ -2222,12 +2220,8 @@ static int sony_battery_get_property(struct power_supply *psy,
 	return ret;
 }
 
-static int sony_battery_probe(struct sony_sc *sc, int append_dev_id)
+static int sony_battery_probe(struct sony_sc *sc)
 {
-	const char *battery_str_fmt = append_dev_id ?
-		"sony_controller_battery_%pMR_%i" :
-		"sony_controller_battery_%pMR";
-	struct power_supply_config psy_cfg = { .drv_data = sc, };
 	struct hid_device *hdev = sc->hdev;
 	int ret;
 
@@ -2237,41 +2231,39 @@ static int sony_battery_probe(struct sony_sc *sc, int append_dev_id)
 	 */
 	sc->battery_capacity = 100;
 
-	sc->battery_desc.properties = sony_battery_props;
-	sc->battery_desc.num_properties = ARRAY_SIZE(sony_battery_props);
-	sc->battery_desc.get_property = sony_battery_get_property;
-	sc->battery_desc.type = POWER_SUPPLY_TYPE_BATTERY;
-	sc->battery_desc.use_for_apm = 0;
-	sc->battery_desc.name = kasprintf(GFP_KERNEL, battery_str_fmt,
-					  sc->mac_address, sc->device_id);
-	if (!sc->battery_desc.name)
+	sc->battery.properties = sony_battery_props;
+	sc->battery.num_properties = ARRAY_SIZE(sony_battery_props);
+	sc->battery.get_property = sony_battery_get_property;
+	sc->battery.type = POWER_SUPPLY_TYPE_BATTERY;
+	sc->battery.use_for_apm = 0;
+	sc->battery.name = kasprintf(GFP_KERNEL, "sony_controller_battery_%pMR",
+				     sc->mac_address);
+	if (!sc->battery.name)
 		return -ENOMEM;
 
-	sc->battery = power_supply_register(&hdev->dev, &sc->battery_desc,
-					    &psy_cfg);
-	if (IS_ERR(sc->battery)) {
-		ret = PTR_ERR(sc->battery);
+	ret = power_supply_register(&hdev->dev, &sc->battery);
+	if (ret) {
 		hid_err(hdev, "Unable to register battery device\n");
 		goto err_free;
 	}
 
-	power_supply_powers(sc->battery, &hdev->dev);
+	power_supply_powers(&sc->battery, &hdev->dev);
 	return 0;
 
 err_free:
-	kfree(sc->battery_desc.name);
-	sc->battery_desc.name = NULL;
+	kfree(sc->battery.name);
+	sc->battery.name = NULL;
 	return ret;
 }
 
 static void sony_battery_remove(struct sony_sc *sc)
 {
-	if (!sc->battery_desc.name)
+	if (!sc->battery.name)
 		return;
 
-	power_supply_unregister(sc->battery);
-	kfree(sc->battery_desc.name);
-	sc->battery_desc.name = NULL;
+	power_supply_unregister(&sc->battery);
+	kfree(sc->battery.name);
+	sc->battery.name = NULL;
 }
 
 /*
@@ -2505,16 +2497,14 @@ static int sony_input_configured(struct hid_device *hdev,
 					struct hid_input *hidinput)
 {
 	struct sony_sc *sc = hid_get_drvdata(hdev);
-	int append_dev_id;
 	int ret;
-
 	ret = sony_set_device_id(sc);
 	if (ret < 0) {
 		hid_err(hdev, "failed to allocate the device id\n");
 		goto err_stop;
 	}
 
-	ret = append_dev_id = sony_check_add(sc);
+	ret = sony_check_add(sc);
 	if (ret < 0)
 		goto err_stop;
 
@@ -2650,7 +2640,7 @@ static int sony_input_configured(struct hid_device *hdev,
 		if (sc->quirks & DUALSHOCK4_DONGLE) {
 			INIT_WORK(&sc->hotplug_worker, dualshock4_calibration_work);
 			sc->hotplug_worker_initialized = 1;
-			sc->ds4_dongle_state = DONGLE_DISCONNECTED;
+			sc->ds4_dongle_state = DONGLE_DISCONNECTED;	
 		}
 
 		sony_init_output_report(sc, dualshock4_send_output_report);
@@ -2660,6 +2650,7 @@ static int sony_input_configured(struct hid_device *hdev,
 		ret = 0;
 	}
 
+	
 	if (sc->quirks & SONY_LED_SUPPORT) {
 		ret = sony_leds_init(sc);
 		if (ret < 0)
@@ -2667,7 +2658,7 @@ static int sony_input_configured(struct hid_device *hdev,
 	}
 
 	if (sc->quirks & SONY_BATTERY_SUPPORT) {
-		ret = sony_battery_probe(sc, append_dev_id);
+		ret = sony_battery_probe(sc);
 		if (ret < 0)
 			goto err_stop;
 
@@ -2795,9 +2786,9 @@ static void sony_remove(struct hid_device *hdev)
 
 	if (sc->quirks & DUALSHOCK4_CONTROLLER_BT)
 		device_remove_file(&sc->hdev->dev, &dev_attr_bt_poll_interval);
-
+	
 	sony_cancel_work_sync(sc);
-
+	
 	kfree(sc->output_report_dmabuf);
 
 	sony_remove_dev_list(sc);

@@ -30,14 +30,11 @@
 #include <linux/of_gpio.h>
 #include <linux/mfd/samsung/core.h>
 #include <linux/mfd/samsung/s2mps11.h>
-#include <linux/mfd/samsung/s2mps13.h>
 #include <linux/mfd/samsung/s2mps14.h>
-#include <linux/mfd/samsung/s2mps15.h>
 #include <linux/mfd/samsung/s2mpu02.h>
 
-/* The highest number of possible regulators for supported devices. */
-#define S2MPS_REGULATOR_MAX		S2MPS13_REGULATOR_MAX
 struct s2mps11_info {
+	unsigned int rdev_num;
 	int ramp_delay2;
 	int ramp_delay34;
 	int ramp_delay5;
@@ -48,15 +45,12 @@ struct s2mps11_info {
 	enum sec_device_type dev_type;
 
 	/*
-	 * One bit for each S2MPS13/S2MPS14/S2MPU02 regulator whether
-	 * the suspend mode was enabled.
+	 * One bit for each S2MPS14/S2MPU02 regulator whether the suspend mode
+	 * was enabled.
 	 */
-	DECLARE_BITMAP(suspend_state, S2MPS_REGULATOR_MAX);
+	unsigned long long s2mps14_suspend_state:35;
 
-	/*
-	 * Array (size: number of regulators) with GPIO-s for external
-	 * sleep control.
-	 */
+	/* Array of size rdev_num with GPIO-s for external sleep control */
 	int *ext_control_gpio;
 };
 
@@ -267,7 +261,6 @@ static struct regulator_ops s2mps11_buck_ops = {
 	.ops		= &s2mps11_ldo_ops,		\
 	.type		= REGULATOR_VOLTAGE,		\
 	.owner		= THIS_MODULE,			\
-	.ramp_delay	= RAMP_DELAY_12_MVUS,		\
 	.min_uV		= MIN_800_MV,			\
 	.uV_step	= step,				\
 	.n_voltages	= S2MPS11_LDO_N_VOLTAGES,	\
@@ -376,7 +369,7 @@ static const struct regulator_desc s2mps11_regulators[] = {
 	regulator_desc_s2mps11_ldo(32, STEP_50_MV),
 	regulator_desc_s2mps11_ldo(33, STEP_50_MV),
 	regulator_desc_s2mps11_ldo(34, STEP_50_MV),
-	regulator_desc_s2mps11_ldo(35, STEP_25_MV),
+	regulator_desc_s2mps11_ldo(35, STEP_50_MV),
 	regulator_desc_s2mps11_ldo(36, STEP_50_MV),
 	regulator_desc_s2mps11_ldo(37, STEP_50_MV),
 	regulator_desc_s2mps11_ldo(38, STEP_50_MV),
@@ -386,132 +379,10 @@ static const struct regulator_desc s2mps11_regulators[] = {
 	regulator_desc_s2mps11_buck1_4(4),
 	regulator_desc_s2mps11_buck5,
 	regulator_desc_s2mps11_buck67810(6, MIN_600_MV, STEP_6_25_MV),
-	regulator_desc_s2mps11_buck67810(7, MIN_600_MV, STEP_12_5_MV),
-	regulator_desc_s2mps11_buck67810(8, MIN_600_MV, STEP_12_5_MV),
+	regulator_desc_s2mps11_buck67810(7, MIN_600_MV, STEP_6_25_MV),
+	regulator_desc_s2mps11_buck67810(8, MIN_600_MV, STEP_6_25_MV),
 	regulator_desc_s2mps11_buck9,
 	regulator_desc_s2mps11_buck67810(10, MIN_750_MV, STEP_12_5_MV),
-};
-
-static struct regulator_ops s2mps14_reg_ops;
-
-#define regulator_desc_s2mps13_ldo(num, min, step, min_sel) {	\
-	.name		= "LDO"#num,				\
-	.id		= S2MPS13_LDO##num,			\
-	.ops		= &s2mps14_reg_ops,			\
-	.type		= REGULATOR_VOLTAGE,			\
-	.owner		= THIS_MODULE,				\
-	.min_uV		= min,					\
-	.uV_step	= step,					\
-	.linear_min_sel	= min_sel,				\
-	.n_voltages	= S2MPS14_LDO_N_VOLTAGES,		\
-	.vsel_reg	= S2MPS13_REG_L1CTRL + num - 1,		\
-	.vsel_mask	= S2MPS14_LDO_VSEL_MASK,		\
-	.enable_reg	= S2MPS13_REG_L1CTRL + num - 1,		\
-	.enable_mask	= S2MPS14_ENABLE_MASK			\
-}
-
-#define regulator_desc_s2mps13_buck(num, min, step, min_sel) {	\
-	.name		= "BUCK"#num,				\
-	.id		= S2MPS13_BUCK##num,			\
-	.ops		= &s2mps14_reg_ops,			\
-	.type		= REGULATOR_VOLTAGE,			\
-	.owner		= THIS_MODULE,				\
-	.min_uV		= min,					\
-	.uV_step	= step,					\
-	.linear_min_sel	= min_sel,				\
-	.n_voltages	= S2MPS14_BUCK_N_VOLTAGES,		\
-	.ramp_delay	= S2MPS13_BUCK_RAMP_DELAY,		\
-	.vsel_reg	= S2MPS13_REG_B1OUT + (num - 1) * 2,	\
-	.vsel_mask	= S2MPS14_BUCK_VSEL_MASK,		\
-	.enable_reg	= S2MPS13_REG_B1CTRL + (num - 1) * 2,	\
-	.enable_mask	= S2MPS14_ENABLE_MASK			\
-}
-
-#define regulator_desc_s2mps13_buck7(num, min, step, min_sel) {	\
-	.name		= "BUCK"#num,				\
-	.id		= S2MPS13_BUCK##num,			\
-	.ops		= &s2mps14_reg_ops,			\
-	.type		= REGULATOR_VOLTAGE,			\
-	.owner		= THIS_MODULE,				\
-	.min_uV		= min,					\
-	.uV_step	= step,					\
-	.linear_min_sel	= min_sel,				\
-	.n_voltages	= S2MPS14_BUCK_N_VOLTAGES,		\
-	.ramp_delay	= S2MPS13_BUCK_RAMP_DELAY,		\
-	.vsel_reg	= S2MPS13_REG_B1OUT + (num) * 2 - 1,	\
-	.vsel_mask	= S2MPS14_BUCK_VSEL_MASK,		\
-	.enable_reg	= S2MPS13_REG_B1CTRL + (num - 1) * 2,	\
-	.enable_mask	= S2MPS14_ENABLE_MASK			\
-}
-
-#define regulator_desc_s2mps13_buck8_10(num, min, step, min_sel) {	\
-	.name		= "BUCK"#num,				\
-	.id		= S2MPS13_BUCK##num,			\
-	.ops		= &s2mps14_reg_ops,			\
-	.type		= REGULATOR_VOLTAGE,			\
-	.owner		= THIS_MODULE,				\
-	.min_uV		= min,					\
-	.uV_step	= step,					\
-	.linear_min_sel	= min_sel,				\
-	.n_voltages	= S2MPS14_BUCK_N_VOLTAGES,		\
-	.ramp_delay	= S2MPS13_BUCK_RAMP_DELAY,		\
-	.vsel_reg	= S2MPS13_REG_B1OUT + (num) * 2 - 1,	\
-	.vsel_mask	= S2MPS14_BUCK_VSEL_MASK,		\
-	.enable_reg	= S2MPS13_REG_B1CTRL + (num) * 2 - 1,	\
-	.enable_mask	= S2MPS14_ENABLE_MASK			\
-}
-
-static const struct regulator_desc s2mps13_regulators[] = {
-	regulator_desc_s2mps13_ldo(1,  MIN_800_MV,  STEP_12_5_MV, 0x00),
-	regulator_desc_s2mps13_ldo(2,  MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(3,  MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(4,  MIN_800_MV,  STEP_12_5_MV, 0x00),
-	regulator_desc_s2mps13_ldo(5,  MIN_800_MV,  STEP_12_5_MV, 0x00),
-	regulator_desc_s2mps13_ldo(6,  MIN_800_MV,  STEP_12_5_MV, 0x00),
-	regulator_desc_s2mps13_ldo(7,  MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(8,  MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(9,  MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(10, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(11, MIN_800_MV,  STEP_25_MV,   0x10),
-	regulator_desc_s2mps13_ldo(12, MIN_800_MV,  STEP_25_MV,   0x10),
-	regulator_desc_s2mps13_ldo(13, MIN_800_MV,  STEP_25_MV,   0x10),
-	regulator_desc_s2mps13_ldo(14, MIN_800_MV,  STEP_12_5_MV, 0x00),
-	regulator_desc_s2mps13_ldo(15, MIN_800_MV,  STEP_12_5_MV, 0x00),
-	regulator_desc_s2mps13_ldo(16, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(17, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(18, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(19, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(20, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(21, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(22, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(23, MIN_800_MV,  STEP_12_5_MV, 0x00),
-	regulator_desc_s2mps13_ldo(24, MIN_800_MV,  STEP_12_5_MV, 0x00),
-	regulator_desc_s2mps13_ldo(25, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(26, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(27, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(28, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(29, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(30, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(31, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(32, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(33, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(34, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(35, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(36, MIN_800_MV,  STEP_12_5_MV, 0x00),
-	regulator_desc_s2mps13_ldo(37, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(38, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_ldo(39, MIN_1000_MV, STEP_25_MV,   0x08),
-	regulator_desc_s2mps13_ldo(40, MIN_1400_MV, STEP_50_MV,   0x0C),
-	regulator_desc_s2mps13_buck(1,  MIN_500_MV,  STEP_6_25_MV, 0x10),
-	regulator_desc_s2mps13_buck(2,  MIN_500_MV,  STEP_6_25_MV, 0x10),
-	regulator_desc_s2mps13_buck(3,  MIN_500_MV,  STEP_6_25_MV, 0x10),
-	regulator_desc_s2mps13_buck(4,  MIN_500_MV,  STEP_6_25_MV, 0x10),
-	regulator_desc_s2mps13_buck(5,  MIN_500_MV,  STEP_6_25_MV, 0x10),
-	regulator_desc_s2mps13_buck(6,  MIN_500_MV,  STEP_6_25_MV, 0x10),
-	regulator_desc_s2mps13_buck7(7,  MIN_500_MV,  STEP_6_25_MV, 0x10),
-	regulator_desc_s2mps13_buck8_10(8,  MIN_1000_MV, STEP_12_5_MV, 0x20),
-	regulator_desc_s2mps13_buck8_10(9,  MIN_1000_MV, STEP_12_5_MV, 0x20),
-	regulator_desc_s2mps13_buck8_10(10, MIN_500_MV,  STEP_6_25_MV, 0x10),
 };
 
 static int s2mps14_regulator_enable(struct regulator_dev *rdev)
@@ -520,9 +391,8 @@ static int s2mps14_regulator_enable(struct regulator_dev *rdev)
 	unsigned int val;
 
 	switch (s2mps11->dev_type) {
-	case S2MPS13X:
 	case S2MPS14X:
-		if (test_bit(rdev_get_id(rdev), s2mps11->suspend_state))
+		if (s2mps11->s2mps14_suspend_state & (1 << rdev_get_id(rdev)))
 			val = S2MPS14_ENABLE_SUSPEND;
 		else if (gpio_is_valid(s2mps11->ext_control_gpio[rdev_get_id(rdev)]))
 			val = S2MPS14_ENABLE_EXT_CONTROL;
@@ -530,14 +400,14 @@ static int s2mps14_regulator_enable(struct regulator_dev *rdev)
 			val = rdev->desc->enable_mask;
 		break;
 	case S2MPU02:
-		if (test_bit(rdev_get_id(rdev), s2mps11->suspend_state))
+		if (s2mps11->s2mps14_suspend_state & (1 << rdev_get_id(rdev)))
 			val = S2MPU02_ENABLE_SUSPEND;
 		else
 			val = rdev->desc->enable_mask;
 		break;
 	default:
 		return -EINVAL;
-	}
+	};
 
 	return regmap_update_bits(rdev->regmap, rdev->desc->enable_reg,
 			rdev->desc->enable_mask, val);
@@ -552,7 +422,6 @@ static int s2mps14_regulator_set_suspend_disable(struct regulator_dev *rdev)
 
 	/* Below LDO should be always on or does not support suspend mode. */
 	switch (s2mps11->dev_type) {
-	case S2MPS13X:
 	case S2MPS14X:
 		switch (rdev_id) {
 		case S2MPS14_LDO3:
@@ -560,7 +429,7 @@ static int s2mps14_regulator_set_suspend_disable(struct regulator_dev *rdev)
 		default:
 			state = S2MPS14_ENABLE_SUSPEND;
 			break;
-		}
+		};
 		break;
 	case S2MPU02:
 		switch (rdev_id) {
@@ -574,17 +443,17 @@ static int s2mps14_regulator_set_suspend_disable(struct regulator_dev *rdev)
 		default:
 			state = S2MPU02_ENABLE_SUSPEND;
 			break;
-		}
+		};
 		break;
 	default:
 		return -EINVAL;
-	}
+	};
 
 	ret = regmap_read(rdev->regmap, rdev->desc->enable_reg, &val);
 	if (ret < 0)
 		return ret;
 
-	set_bit(rdev_get_id(rdev), s2mps11->suspend_state);
+	s2mps11->s2mps14_suspend_state |= (1 << rdev_get_id(rdev));
 	/*
 	 * Don't enable suspend mode if regulator is already disabled because
 	 * this would effectively for a short time turn on the regulator after
@@ -681,133 +550,6 @@ static const struct regulator_desc s2mps14_regulators[] = {
 				    S2MPS14_BUCK1235_START_SEL),
 };
 
-static struct regulator_ops s2mps15_reg_ldo_ops = {
-	.list_voltage		= regulator_list_voltage_linear_range,
-	.map_voltage		= regulator_map_voltage_linear_range,
-	.is_enabled		= regulator_is_enabled_regmap,
-	.enable			= regulator_enable_regmap,
-	.disable		= regulator_disable_regmap,
-	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
-	.set_voltage_sel	= regulator_set_voltage_sel_regmap,
-};
-
-static struct regulator_ops s2mps15_reg_buck_ops = {
-	.list_voltage		= regulator_list_voltage_linear_range,
-	.map_voltage		= regulator_map_voltage_linear_range,
-	.is_enabled		= regulator_is_enabled_regmap,
-	.enable			= regulator_enable_regmap,
-	.disable		= regulator_disable_regmap,
-	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
-	.set_voltage_sel	= regulator_set_voltage_sel_regmap,
-	.set_voltage_time_sel	= regulator_set_voltage_time_sel,
-};
-
-#define regulator_desc_s2mps15_ldo(num, range) {	\
-	.name		= "LDO"#num,			\
-	.id		= S2MPS15_LDO##num,		\
-	.ops		= &s2mps15_reg_ldo_ops,		\
-	.type		= REGULATOR_VOLTAGE,		\
-	.owner		= THIS_MODULE,			\
-	.linear_ranges	= range,			\
-	.n_linear_ranges = ARRAY_SIZE(range),		\
-	.n_voltages	= S2MPS15_LDO_N_VOLTAGES,	\
-	.vsel_reg	= S2MPS15_REG_L1CTRL + num - 1,	\
-	.vsel_mask	= S2MPS15_LDO_VSEL_MASK,	\
-	.enable_reg	= S2MPS15_REG_L1CTRL + num - 1,	\
-	.enable_mask	= S2MPS15_ENABLE_MASK		\
-}
-
-#define regulator_desc_s2mps15_buck(num, range) {			\
-	.name		= "BUCK"#num,					\
-	.id		= S2MPS15_BUCK##num,				\
-	.ops		= &s2mps15_reg_buck_ops,			\
-	.type		= REGULATOR_VOLTAGE,				\
-	.owner		= THIS_MODULE,					\
-	.linear_ranges	= range,					\
-	.n_linear_ranges = ARRAY_SIZE(range),				\
-	.ramp_delay	= 12500,					\
-	.n_voltages	= S2MPS15_BUCK_N_VOLTAGES,			\
-	.vsel_reg	= S2MPS15_REG_B1CTRL2 + ((num - 1) * 2),	\
-	.vsel_mask	= S2MPS15_BUCK_VSEL_MASK,			\
-	.enable_reg	= S2MPS15_REG_B1CTRL1 + ((num - 1) * 2),	\
-	.enable_mask	= S2MPS15_ENABLE_MASK				\
-}
-
-/* voltage range for s2mps15 LDO 3, 5, 15, 16, 18, 20, 23 and 27 */
-static const struct regulator_linear_range s2mps15_ldo_voltage_ranges1[] = {
-	REGULATOR_LINEAR_RANGE(1000000, 0xc, 0x38, 25000),
-};
-
-/* voltage range for s2mps15 LDO 2, 6, 14, 17, 19, 21, 24 and 25 */
-static const struct regulator_linear_range s2mps15_ldo_voltage_ranges2[] = {
-	REGULATOR_LINEAR_RANGE(1800000, 0x0, 0x3f, 25000),
-};
-
-/* voltage range for s2mps15 LDO 4, 11, 12, 13, 22 and 26 */
-static const struct regulator_linear_range s2mps15_ldo_voltage_ranges3[] = {
-	REGULATOR_LINEAR_RANGE(700000, 0x0, 0x34, 12500),
-};
-
-/* voltage range for s2mps15 LDO 7, 8, 9 and 10 */
-static const struct regulator_linear_range s2mps15_ldo_voltage_ranges4[] = {
-	REGULATOR_LINEAR_RANGE(700000, 0x10, 0x20, 25000),
-};
-
-/* voltage range for s2mps15 LDO 1 */
-static const struct regulator_linear_range s2mps15_ldo_voltage_ranges5[] = {
-	REGULATOR_LINEAR_RANGE(500000, 0x0, 0x20, 12500),
-};
-
-/* voltage range for s2mps15 BUCK 1, 2, 3, 4, 5, 6 and 7 */
-static const struct regulator_linear_range s2mps15_buck_voltage_ranges1[] = {
-	REGULATOR_LINEAR_RANGE(500000, 0x20, 0xc0, 6250),
-};
-
-/* voltage range for s2mps15 BUCK 8, 9 and 10 */
-static const struct regulator_linear_range s2mps15_buck_voltage_ranges2[] = {
-	REGULATOR_LINEAR_RANGE(1000000, 0x20, 0x78, 12500),
-};
-
-static const struct regulator_desc s2mps15_regulators[] = {
-	regulator_desc_s2mps15_ldo(1, s2mps15_ldo_voltage_ranges5),
-	regulator_desc_s2mps15_ldo(2, s2mps15_ldo_voltage_ranges2),
-	regulator_desc_s2mps15_ldo(3, s2mps15_ldo_voltage_ranges1),
-	regulator_desc_s2mps15_ldo(4, s2mps15_ldo_voltage_ranges3),
-	regulator_desc_s2mps15_ldo(5, s2mps15_ldo_voltage_ranges1),
-	regulator_desc_s2mps15_ldo(6, s2mps15_ldo_voltage_ranges2),
-	regulator_desc_s2mps15_ldo(7, s2mps15_ldo_voltage_ranges4),
-	regulator_desc_s2mps15_ldo(8, s2mps15_ldo_voltage_ranges4),
-	regulator_desc_s2mps15_ldo(9, s2mps15_ldo_voltage_ranges4),
-	regulator_desc_s2mps15_ldo(10, s2mps15_ldo_voltage_ranges4),
-	regulator_desc_s2mps15_ldo(11, s2mps15_ldo_voltage_ranges3),
-	regulator_desc_s2mps15_ldo(12, s2mps15_ldo_voltage_ranges3),
-	regulator_desc_s2mps15_ldo(13, s2mps15_ldo_voltage_ranges3),
-	regulator_desc_s2mps15_ldo(14, s2mps15_ldo_voltage_ranges2),
-	regulator_desc_s2mps15_ldo(15, s2mps15_ldo_voltage_ranges1),
-	regulator_desc_s2mps15_ldo(16, s2mps15_ldo_voltage_ranges1),
-	regulator_desc_s2mps15_ldo(17, s2mps15_ldo_voltage_ranges2),
-	regulator_desc_s2mps15_ldo(18, s2mps15_ldo_voltage_ranges1),
-	regulator_desc_s2mps15_ldo(19, s2mps15_ldo_voltage_ranges2),
-	regulator_desc_s2mps15_ldo(20, s2mps15_ldo_voltage_ranges1),
-	regulator_desc_s2mps15_ldo(21, s2mps15_ldo_voltage_ranges2),
-	regulator_desc_s2mps15_ldo(22, s2mps15_ldo_voltage_ranges3),
-	regulator_desc_s2mps15_ldo(23, s2mps15_ldo_voltage_ranges1),
-	regulator_desc_s2mps15_ldo(24, s2mps15_ldo_voltage_ranges2),
-	regulator_desc_s2mps15_ldo(25, s2mps15_ldo_voltage_ranges2),
-	regulator_desc_s2mps15_ldo(26, s2mps15_ldo_voltage_ranges3),
-	regulator_desc_s2mps15_ldo(27, s2mps15_ldo_voltage_ranges1),
-	regulator_desc_s2mps15_buck(1, s2mps15_buck_voltage_ranges1),
-	regulator_desc_s2mps15_buck(2, s2mps15_buck_voltage_ranges1),
-	regulator_desc_s2mps15_buck(3, s2mps15_buck_voltage_ranges1),
-	regulator_desc_s2mps15_buck(4, s2mps15_buck_voltage_ranges1),
-	regulator_desc_s2mps15_buck(5, s2mps15_buck_voltage_ranges1),
-	regulator_desc_s2mps15_buck(6, s2mps15_buck_voltage_ranges1),
-	regulator_desc_s2mps15_buck(7, s2mps15_buck_voltage_ranges1),
-	regulator_desc_s2mps15_buck(8, s2mps15_buck_voltage_ranges2),
-	regulator_desc_s2mps15_buck(9, s2mps15_buck_voltage_ranges2),
-	regulator_desc_s2mps15_buck(10, s2mps15_buck_voltage_ranges2),
-};
-
 static int s2mps14_pmic_enable_ext_control(struct s2mps11_info *s2mps11,
 		struct regulator_dev *rdev)
 {
@@ -838,8 +580,7 @@ static void s2mps14_pmic_dt_parse_ext_control_gpio(struct platform_device *pdev,
 }
 
 static int s2mps11_pmic_dt_parse(struct platform_device *pdev,
-		struct of_regulator_match *rdata, struct s2mps11_info *s2mps11,
-		unsigned int rdev_num)
+		struct of_regulator_match *rdata, struct s2mps11_info *s2mps11)
 {
 	struct device_node *reg_np;
 
@@ -849,7 +590,7 @@ static int s2mps11_pmic_dt_parse(struct platform_device *pdev,
 		return -EINVAL;
 	}
 
-	of_regulator_match(&pdev->dev, reg_np, rdata, rdev_num);
+	of_regulator_match(&pdev->dev, reg_np, rdata, s2mps11->rdev_num);
 	if (s2mps11->dev_type == S2MPS14X)
 		s2mps14_pmic_dt_parse_ext_control_gpio(pdev, rdata, s2mps11);
 
@@ -1097,7 +838,6 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 	struct of_regulator_match *rdata = NULL;
 	struct regulator_config config = { };
 	struct s2mps11_info *s2mps11;
-	unsigned int rdev_num = 0;
 	int i, ret = 0;
 	const struct regulator_desc *regulators;
 
@@ -1109,38 +849,25 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 	s2mps11->dev_type = platform_get_device_id(pdev)->driver_data;
 	switch (s2mps11->dev_type) {
 	case S2MPS11X:
-		rdev_num = ARRAY_SIZE(s2mps11_regulators);
+		s2mps11->rdev_num = ARRAY_SIZE(s2mps11_regulators);
 		regulators = s2mps11_regulators;
-		BUILD_BUG_ON(S2MPS_REGULATOR_MAX < ARRAY_SIZE(s2mps11_regulators));
-		break;
-	case S2MPS13X:
-		rdev_num = ARRAY_SIZE(s2mps13_regulators);
-		regulators = s2mps13_regulators;
-		BUILD_BUG_ON(S2MPS_REGULATOR_MAX < ARRAY_SIZE(s2mps13_regulators));
 		break;
 	case S2MPS14X:
-		rdev_num = ARRAY_SIZE(s2mps14_regulators);
+		s2mps11->rdev_num = ARRAY_SIZE(s2mps14_regulators);
 		regulators = s2mps14_regulators;
-		BUILD_BUG_ON(S2MPS_REGULATOR_MAX < ARRAY_SIZE(s2mps14_regulators));
-		break;
-	case S2MPS15X:
-		rdev_num = ARRAY_SIZE(s2mps15_regulators);
-		regulators = s2mps15_regulators;
-		BUILD_BUG_ON(S2MPS_REGULATOR_MAX < ARRAY_SIZE(s2mps15_regulators));
 		break;
 	case S2MPU02:
-		rdev_num = ARRAY_SIZE(s2mpu02_regulators);
+		s2mps11->rdev_num = ARRAY_SIZE(s2mpu02_regulators);
 		regulators = s2mpu02_regulators;
-		BUILD_BUG_ON(S2MPS_REGULATOR_MAX < ARRAY_SIZE(s2mpu02_regulators));
 		break;
 	default:
 		dev_err(&pdev->dev, "Invalid device type: %u\n",
 				    s2mps11->dev_type);
 		return -EINVAL;
-	}
+	};
 
-	s2mps11->ext_control_gpio = devm_kmalloc(&pdev->dev,
-			sizeof(*s2mps11->ext_control_gpio) * rdev_num,
+	s2mps11->ext_control_gpio = devm_kzalloc(&pdev->dev,
+			sizeof(*s2mps11->ext_control_gpio) * s2mps11->rdev_num,
 			GFP_KERNEL);
 	if (!s2mps11->ext_control_gpio)
 		return -ENOMEM;
@@ -1148,7 +875,7 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 	 * 0 is a valid GPIO so initialize all GPIO-s to negative value
 	 * to indicate that external control won't be used for this regulator.
 	 */
-	for (i = 0; i < rdev_num; i++)
+	for (i = 0; i < s2mps11->rdev_num; i++)
 		s2mps11->ext_control_gpio[i] = -EINVAL;
 
 	if (!iodev->dev->of_node) {
@@ -1162,14 +889,14 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 		}
 	}
 
-	rdata = kzalloc(sizeof(*rdata) * rdev_num, GFP_KERNEL);
+	rdata = kzalloc(sizeof(*rdata) * s2mps11->rdev_num, GFP_KERNEL);
 	if (!rdata)
 		return -ENOMEM;
 
-	for (i = 0; i < rdev_num; i++)
+	for (i = 0; i < s2mps11->rdev_num; i++)
 		rdata[i].name = regulators[i].name;
 
-	ret = s2mps11_pmic_dt_parse(pdev, rdata, s2mps11, rdev_num);
+	ret = s2mps11_pmic_dt_parse(pdev, rdata, s2mps11);
 	if (ret)
 		goto out;
 
@@ -1180,8 +907,7 @@ common_reg:
 	config.regmap = iodev->regmap_pmic;
 	config.driver_data = s2mps11;
 	config.ena_gpio_flags = GPIOF_OUT_INIT_HIGH;
-	config.ena_gpio_initialized = true;
-	for (i = 0; i < rdev_num; i++) {
+	for (i = 0; i < s2mps11->rdev_num; i++) {
 		struct regulator_dev *regulator;
 
 		if (pdata) {
@@ -1221,11 +947,9 @@ out:
 }
 
 static const struct platform_device_id s2mps11_pmic_id[] = {
-	{ "s2mps11-regulator", S2MPS11X},
-	{ "s2mps13-regulator", S2MPS13X},
-	{ "s2mps14-regulator", S2MPS14X},
-	{ "s2mps15-regulator", S2MPS15X},
-	{ "s2mpu02-regulator", S2MPU02},
+	{ "s2mps11-pmic", S2MPS11X},
+	{ "s2mps14-pmic", S2MPS14X},
+	{ "s2mpu02-pmic", S2MPU02},
 	{ },
 };
 MODULE_DEVICE_TABLE(platform, s2mps11_pmic_id);
@@ -1233,14 +957,25 @@ MODULE_DEVICE_TABLE(platform, s2mps11_pmic_id);
 static struct platform_driver s2mps11_pmic_driver = {
 	.driver = {
 		.name = "s2mps11-pmic",
+		.owner = THIS_MODULE,
 	},
 	.probe = s2mps11_pmic_probe,
 	.id_table = s2mps11_pmic_id,
 };
 
-module_platform_driver(s2mps11_pmic_driver);
+static int __init s2mps11_pmic_init(void)
+{
+	return platform_driver_register(&s2mps11_pmic_driver);
+}
+subsys_initcall(s2mps11_pmic_init);
+
+static void __exit s2mps11_pmic_exit(void)
+{
+	platform_driver_unregister(&s2mps11_pmic_driver);
+}
+module_exit(s2mps11_pmic_exit);
 
 /* Module information */
 MODULE_AUTHOR("Sangbeom Kim <sbkim73@samsung.com>");
-MODULE_DESCRIPTION("SAMSUNG S2MPS11/S2MPS14/S2MPS15/S2MPU02 Regulator Driver");
+MODULE_DESCRIPTION("SAMSUNG S2MPS11/S2MPS14/S2MPU02 Regulator Driver");
 MODULE_LICENSE("GPL");

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,10 +17,8 @@
 #include <linux/ipc_logging.h>
 #include <linux/msm_mhi_dev.h>
 
-/**
- * MHI control data structures alloted by the host, including
- * channel context array, event context array, command context and rings.
- */
+/* MHI control data structures alloted by the host, including
+ * channel context array, event context array, command context and rings */
 
 /* Channel context state */
 enum mhi_dev_ch_ctx_state {
@@ -263,7 +261,6 @@ struct mhi_config {
 	uint32_t	mhi_reg_len;
 	uint32_t	version;
 	uint32_t	event_rings;
-	uint32_t	hw_event_rings;
 	uint32_t	channels;
 	uint32_t	chdb_offset;
 	uint32_t	erdb_offset;
@@ -277,10 +274,16 @@ struct mhi_config {
 #define TRB_MAX_DATA_SIZE		8192
 #define MHI_CTRL_STATE			100
 
-/*maximum trasnfer completion events buffer*/
-#define MAX_TR_EVENTS			50
-/*maximum event requests */
-#define MHI_MAX_EVT_REQ			50
+/* maximum transfer completion events buffer - set to ring size */
+#define MAX_TR_EVENTS			128
+/*
+ * Set maximum event requests equal to MAX_TR_EVENTS since in the
+ * worst case we may need to flush every event ring element entry
+ * individually
+ */
+#define MHI_MAX_EVT_REQ			MAX_TR_EVENTS
+/* Set flush threshold to 80% of MAX_TR_EVENTS */
+#define MHI_CMPL_EVT_FLUSH_THRSHLD ((MAX_TR_EVENTS * 8) / 10)
 
 /* Possible ring element types */
 union mhi_dev_ring_element_type {
@@ -418,6 +421,11 @@ struct ring_cache_req {
 
 struct event_req {
 	union mhi_dev_ring_element_type *tr_events;
+	/*
+	 * Start index of the completion event buffer segment
+	 * to be flushed to host
+	 */
+	u32			start;
 	u32			num_events;
 	dma_addr_t		dma;
 	u32			dma_len;
@@ -443,16 +451,20 @@ struct mhi_dev_channel {
 	struct mutex			ch_lock;
 	/* client which the current inbound/outbound message is for */
 	struct mhi_dev_client		*active_client;
+	/* Pointer to completion event buffer */
+	union mhi_dev_ring_element_type *tr_events;
+	/* Indices for completion event buffer */
+	uint32_t			evt_buf_rp;
+	uint32_t			evt_buf_wp;
 	/*
-	 * Pointer to event request structs used to temporarily store
-	 * completion events and meta data before sending them to host
+	 * Pointer to a block of event request structs used to temporarily
+	 * store completion events and meta data before sending them to host
 	 */
 	struct event_req		*ereqs;
-	/* Pointer to completion event buffers */
-	union mhi_dev_ring_element_type *tr_events;
+	/* Linked list head for event request structs */
 	struct list_head		event_req_buffers;
+	/* Pointer to the currently used event request struct */
 	struct event_req		*curr_ereq;
-
 	/* current TRE being processed */
 	uint64_t			tre_loc;
 	/* current TRE size */
@@ -533,7 +545,6 @@ struct mhi_dev {
 	u32                             ifc_id;
 	struct ep_pcie_hw               *phandle;
 	struct work_struct		pcie_event;
-	struct ep_pcie_msi_config	msi_cfg;
 
 	atomic_t			write_active;
 	atomic_t			is_suspended;
@@ -565,9 +576,6 @@ struct mhi_dev {
 	/* iATU is required to map control and data region */
 	bool				config_iatu;
 
-	/* Indicates if mhi init is done */
-	bool				init_done;
-
 	/* MHI state info */
 	enum mhi_ctrl_info		ctrl_info;
 
@@ -591,7 +599,6 @@ enum mhi_msg_level {
 	MHI_MSG_reserved = 0x80000000
 };
 
-extern uint32_t bhi_imgtxdb;
 extern enum mhi_msg_level mhi_msg_lvl;
 extern enum mhi_msg_level mhi_ipc_msg_lvl;
 extern void *mhi_ipc_log;
@@ -602,7 +609,7 @@ extern void *mhi_ipc_log;
 	} \
 	if (mhi_ipc_log && (_msg_lvl >= mhi_ipc_msg_lvl)) { \
 		ipc_log_string(mhi_ipc_log,                     \
-		"[0x%x %s] " _msg, bhi_imgtxdb, __func__, ##__VA_ARGS__);     \
+			"[%s] " _msg, __func__, ##__VA_ARGS__);     \
 	} \
 } while (0)
 
@@ -622,7 +629,7 @@ struct mhi_dev_iov {
 
 
 struct mhi_dev_trace {
-	unsigned int timestamp;
+	unsigned timestamp;
 	uint32_t data[TRACE_DATA_MAX];
 };
 
@@ -897,7 +904,7 @@ int mhi_dev_mmio_read_chdb_status_interrupts(struct mhi_dev *dev);
 int mhi_dev_mmio_enable_erdb_interrupts(struct mhi_dev *dev);
 
 /**
- *mhi_dev_mmio_mask_erdb_interrupts() - Mask all Event doorbell
+ mhi_dev_mmio_mask_erdb_interrupts() - Mask all Event doorbell
  *		interrupts.
  * @dev:	MHI device structure.
  */
@@ -909,12 +916,6 @@ int mhi_dev_mmio_mask_erdb_interrupts(struct mhi_dev *dev);
  * @dev:	MHI device structure.
  */
 int mhi_dev_mmio_read_erdb_status_interrupts(struct mhi_dev *dev);
-
-/**
- * mhi_dev_mmio_mask_interrupts() - Mask all MHI interrupts.
- * @dev:	MHI device structure.
- */
-void mhi_dev_mmio_mask_interrupts(struct mhi_dev *dev);
 
 /**
  * mhi_dev_mmio_clear_interrupts() - Clear all doorbell interrupts.
@@ -987,7 +988,7 @@ int mhi_dev_get_mhi_addr(struct mhi_dev *dev);
  * @mhi_reset:	MHI device reset from host.
  */
 int mhi_dev_mmio_get_mhi_state(struct mhi_dev *dev, enum mhi_dev_state *state,
-						u32 *mhi_reset);
+						bool *mhi_reset);
 
 /**
  * mhi_dev_mmio_init() - Initializes the MMIO and reads the Number of event
@@ -1049,7 +1050,7 @@ int mhi_dev_send_ee_event(struct mhi_dev *mhi,
 /**
  * mhi_dev_syserr() - System error when unexpected events are received.
  * @dev:	MHI device structure.
- */
+*/
 int mhi_dev_syserr(struct mhi_dev *mhi);
 
 /**
@@ -1097,17 +1098,5 @@ int mhi_dev_net_interface_init(void);
 void mhi_dev_notify_a7_event(struct mhi_dev *mhi);
 
 void uci_ctrl_update(struct mhi_dev_client_cb_reason *reason);
-/**
- * mhi_uci_chan_state_notify_all - Notifies channel state updates for
- *				all clients who have uevents enabled.
- */
-void mhi_uci_chan_state_notify_all(struct mhi_dev *mhi,
-		enum mhi_ctrl_info ch_state);
-/**
- * mhi_uci_chan_state_notify - Notifies channel state update to the client
- *				if uevents are enabled.
- */
-void mhi_uci_chan_state_notify(struct mhi_dev *mhi,
-		enum mhi_client_channel ch_id, enum mhi_ctrl_info ch_state);
 
 #endif /* _MHI_H */

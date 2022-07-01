@@ -125,6 +125,9 @@ struct class ubi_class = {
 
 static ssize_t dev_attribute_show(struct device *dev,
 				  struct device_attribute *attr, char *buf);
+static ssize_t dev_attribute_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count);
 
 /* UBI device attributes (correspond to files in '/<sysfs>/class/ubi/ubiX') */
 static struct device_attribute dev_eraseblock_size =
@@ -149,8 +152,13 @@ static struct device_attribute dev_bgt_enabled =
 	__ATTR(bgt_enabled, S_IRUGO, dev_attribute_show, NULL);
 static struct device_attribute dev_mtd_num =
 	__ATTR(mtd_num, S_IRUGO, dev_attribute_show, NULL);
-static struct device_attribute dev_ro_mode =
-	__ATTR(ro_mode, S_IRUGO, dev_attribute_show, NULL);
+static struct device_attribute dev_mtd_trigger_scrub =
+	__ATTR(scrub_all, S_IRUGO | S_IWUSR,
+		dev_attribute_show, dev_attribute_store);
+static struct device_attribute dev_mtd_max_scrub_sqnum =
+	__ATTR(scrub_max_sqnum, S_IRUGO, dev_attribute_show, NULL);
+static struct device_attribute dev_mtd_min_scrub_sqnum =
+	__ATTR(scrub_min_sqnum, S_IRUGO, dev_attribute_show, NULL);
 
 /**
  * ubi_volume_notify - send a volume change notification.
@@ -343,6 +351,17 @@ int ubi_major2num(int major)
 	return ubi_num;
 }
 
+static unsigned long long get_max_sqnum(struct ubi_device *ubi)
+{
+	unsigned long long max_sqnum;
+
+	spin_lock(&ubi->ltree_lock);
+	max_sqnum = ubi->global_sqnum - 1;
+	spin_unlock(&ubi->ltree_lock);
+
+	return max_sqnum;
+}
+
 /* "Show" method for files in '/<sysfs>/class/ubi/ubiX/' */
 static ssize_t dev_attribute_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
@@ -387,8 +406,12 @@ static ssize_t dev_attribute_show(struct device *dev,
 		ret = sprintf(buf, "%d\n", ubi->thread_enabled);
 	else if (attr == &dev_mtd_num)
 		ret = sprintf(buf, "%d\n", ubi->mtd->index);
-	else if (attr == &dev_ro_mode)
-		ret = sprintf(buf, "%d\n", ubi->ro_mode);
+	else if (attr == &dev_mtd_trigger_scrub)
+		ret = sprintf(buf, "%d\n", atomic_read(&ubi->scrub_work_count));
+	else if (attr == &dev_mtd_max_scrub_sqnum)
+		ret = sprintf(buf, "%llu\n", get_max_sqnum(ubi));
+	else if (attr == &dev_mtd_min_scrub_sqnum)
+		ret = sprintf(buf, "%llu\n", ubi_wl_scrub_get_min_sqnum(ubi));
 	else
 		ret = -EINVAL;
 
@@ -408,10 +431,44 @@ static struct attribute *ubi_dev_attrs[] = {
 	&dev_min_io_size.attr,
 	&dev_bgt_enabled.attr,
 	&dev_mtd_num.attr,
-	&dev_ro_mode.attr,
+	&dev_mtd_trigger_scrub.attr,
+	&dev_mtd_max_scrub_sqnum.attr,
+	&dev_mtd_min_scrub_sqnum.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(ubi_dev);
+
+static ssize_t dev_attribute_store(struct device *dev,
+			   struct device_attribute *attr,
+			   const char *buf, size_t count)
+{
+	int ret = count;
+	struct ubi_device *ubi;
+	unsigned long long scrub_sqnum;
+
+	ubi = container_of(dev, struct ubi_device, dev);
+	ubi = ubi_get_device(ubi->ubi_num);
+	if (!ubi)
+		return -ENODEV;
+
+	if (attr == &dev_mtd_trigger_scrub) {
+		if (kstrtoull(buf, 10, &scrub_sqnum)) {
+			ret = -EINVAL;
+			goto out;
+		}
+		if (!ubi->lookuptbl) {
+			pr_err("lookuptbl is null");
+			goto out;
+		}
+		ret = ubi_wl_scrub_all(ubi, scrub_sqnum);
+		if (ret == 0)
+			ret = count;
+	}
+
+out:
+	ubi_put_device(ubi);
+	return ret;
+}
 
 static void dev_release(struct device *dev)
 {
@@ -574,7 +631,7 @@ void ubi_free_internal_volumes(struct ubi_device *ubi)
 
 	for (i = ubi->vtbl_slots;
 	     i < ubi->vtbl_slots + UBI_INT_VOL_COUNT; i++) {
-		ubi_eba_replace_table(ubi->volumes[i], NULL);
+		kfree(ubi->volumes[i]->eba_tbl);
 		kfree(ubi->volumes[i]);
 	}
 }
@@ -874,7 +931,7 @@ int ubi_attach_mtd_dev(struct mtd_info *mtd, int ubi_num,
 	for (i = 0; i < UBI_MAX_DEVICES; i++) {
 		ubi = ubi_devices[i];
 		if (ubi && mtd->index == ubi->mtd->index) {
-			pr_err("ubi: mtd%d is already attached to ubi%d",
+			ubi_err(ubi, "mtd%d is already attached to ubi%d",
 				mtd->index, i);
 			return -EEXIST;
 		}
@@ -889,7 +946,7 @@ int ubi_attach_mtd_dev(struct mtd_info *mtd, int ubi_num,
 	 * no sense to attach emulated MTD devices, so we prohibit this.
 	 */
 	if (mtd->type == MTD_UBIVOLUME) {
-		pr_err("ubi: refuse attaching mtd%d - it is already emulated on top of UBI",
+		ubi_err(ubi, "refuse attaching mtd%d - it is already emulated on top of UBI",
 			mtd->index);
 		return -EINVAL;
 	}
@@ -911,7 +968,7 @@ int ubi_attach_mtd_dev(struct mtd_info *mtd, int ubi_num,
 			if (!ubi_devices[ubi_num])
 				break;
 		if (ubi_num == UBI_MAX_DEVICES) {
-			pr_err("ubi: only %d UBI devices may be created",
+			ubi_err(ubi, "only %d UBI devices may be created",
 				UBI_MAX_DEVICES);
 			return -ENFILE;
 		}
@@ -921,7 +978,7 @@ int ubi_attach_mtd_dev(struct mtd_info *mtd, int ubi_num,
 
 		/* Make sure ubi_num is not busy */
 		if (ubi_devices[ubi_num]) {
-			pr_err("ubi: ubi%i already exists", ubi_num);
+			ubi_err(ubi, "already exists");
 			return -EEXIST;
 		}
 	}
@@ -1137,9 +1194,6 @@ int ubi_detach_mtd_dev(int ubi_num, int anyway)
 	 */
 	get_device(&ubi->dev);
 
-#ifdef CONFIG_MTD_UBI_FASTMAP
-	cancel_work_sync(&ubi->fm_work);
-#endif
 	ubi_debugfs_exit_dev(ubi);
 	uif_close(ubi);
 
@@ -1164,25 +1218,21 @@ int ubi_detach_mtd_dev(int ubi_num, int anyway)
  */
 static struct mtd_info * __init open_mtd_by_chdev(const char *mtd_dev)
 {
-	int err, minor;
+	int err, major, minor, mode;
 	struct path path;
-	struct kstat stat;
 
 	/* Probably this is an MTD character device node path */
 	err = kern_path(mtd_dev, LOOKUP_FOLLOW, &path);
 	if (err)
 		return ERR_PTR(err);
 
-	err = vfs_getattr(&path, &stat);
-	path_put(&path);
-	if (err)
-		return ERR_PTR(err);
-
 	/* MTD device number is defined by the major / minor numbers */
-	if (MAJOR(stat.rdev) != MTD_CHAR_MAJOR || !S_ISCHR(stat.mode))
+	major = imajor(path.dentry->d_inode);
+	minor = iminor(path.dentry->d_inode);
+	mode = path.dentry->d_inode->i_mode;
+	path_put(&path);
+	if (major != MTD_CHAR_MAJOR || !S_ISCHR(mode))
 		return ERR_PTR(-EINVAL);
-
-	minor = MINOR(stat.rdev);
 
 	if (minor & 1)
 		/*
@@ -1403,7 +1453,7 @@ static int __init bytes_str_to_int(const char *str)
  * This function returns zero in case of success and a negative error code in
  * case of error.
  */
-static int __init ubi_mtd_param_parse(const char *val, const struct kernel_param *kp)
+static int __init ubi_mtd_param_parse(const char *val, struct kernel_param *kp)
 {
 	int i, len;
 	struct mtd_dev_param *p;

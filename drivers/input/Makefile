@@ -7,14 +7,16 @@
 obj-$(CONFIG_INPUT)		+= input-core.o
 input-core-y := input.o input-compat.o input-mt.o ff-core.o
 
+obj-$(CONFIG_SEC_DEBUG_TSP_LOG) += sec_tsp_log.o
 obj-$(CONFIG_INPUT_TOUCHSCREEN)	+= sec_cmd.o
+obj-$(CONFIG_INPUT_TOUCHSCREEN_TCLM)	+= sec_tclm.o
+obj-$(CONFIG_INPUT_TOUCHSCREEN_TCLMV2)	+= sec_tclm_v2.o
 
 obj-$(CONFIG_INPUT_FF_MEMLESS)	+= ff-memless.o
 obj-$(CONFIG_INPUT_POLLDEV)	+= input-polldev.o
 obj-$(CONFIG_INPUT_SPARSEKMAP)	+= sparse-keymap.o
 obj-$(CONFIG_INPUT_MATRIXKMAP)	+= matrix-keymap.o
 
-obj-$(CONFIG_INPUT_LEDS)	+= input-leds.o
 obj-$(CONFIG_INPUT_MOUSEDEV)	+= mousedev.o
 obj-$(CONFIG_INPUT_JOYDEV)	+= joydev.o
 obj-$(CONFIG_INPUT_EVDEV)	+= evdev.o
@@ -30,11 +32,6 @@ obj-$(CONFIG_INPUT_MISC)	+= misc/
 obj-$(CONFIG_INPUT_APMPOWER)	+= apm-power.o
 obj-$(CONFIG_INPUT_KEYRESET)	+= keyreset.o
 obj-$(CONFIG_INPUT_KEYCOMBO)	+= keycombo.o
+obj-$(CONFIG_SENSORS_HALL)	+= hall_sensor.o
+obj-y	+= sensors/smi130/
 
-obj-$(CONFIG_RMI4_CORE)		+= rmi4/
-
-obj-$(CONFIG_INPUT_KEYRESET)	+= keyreset.o
-obj-$(CONFIG_INPUT_KEYCOMBO)	+= keycombo.o
-obj-$(CONFIG_SMI130)   += sensors/smi130/
-
-obj-$(CONFIG_FINGERPRINT)	+= fingerprint/

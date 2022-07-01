@@ -1,13 +1,11 @@
-menuconfig DVB_MPQ_DEMUX
+config DVB_MPQ_DEMUX
 	tristate "DVB Demux Device"
 	depends on DVB_MPQ && ION && ION_MSM
 	default n
 
 	help
-	  Support for Qualcomm Technologies Inc based dvb demux device.
-	  Say Y if you own such a device and want to use it.
-	  The Demux device is used to stream playback either
-	  from TSIF interface or from DVR interface.
+	  Support for Qualcomm based dvb demux device.
+	  Say Y or M if you own such a device and want to use it.
 
 config DVB_MPQ_NUM_DMX_DEVICES
 	int "Number of demux devices"
@@ -16,32 +14,25 @@ config DVB_MPQ_NUM_DMX_DEVICES
 	range 1 255
 
 	help
-	  Configure number of demux devices.
-	  Depends on your use-cases for maximum concurrent stream playback.
+	  Configure number of demux devices. Depends on your use-cases for maximum concurrent stream playback.
 
-config DVB_MPQ_MEDIA_BOX_DEMUX
-	bool "Media box demux support"
+choice
+	prompt "Demux Hardware Plugin"
 	depends on DVB_MPQ_DEMUX
-	default n
+	default DVB_MPQ_TSPP1
 	help
-		Use this option if your HW is Qualcomm Technologies Inc
-		media box and demux support is required on that media box.
-		Currently this config is being used for demux video events
-		optimization.
+	  Enable support of specific demux HW plugin depending on the existing HW support.
+	  Depending on the enabled HW, demux may take advantage of HW capbailities to perform some tasks in HW instead of SW.
 
-config DVB_MPQ_TSPP1
-	bool "TSPPv1 plugin"
-	depends on DVB_MPQ_DEMUX && TSPP
-	help
-		Use this option if your HW has
-		Transport Stream Packet Processor(TSPP) version1 support.
-		Demux may take adavantage of HW capabilities to perform
-		some tasks in HW instead of SW.
+	config DVB_MPQ_TSPP1
+		bool "TSPPv1 plugin"
+		depends on TSPP
+		help
+			Use this option if your HW has Transport Stream Packet Processor (TSPP) version1 support
 
-config DVB_MPQ_SW
-	bool "Software plugin"
-	depends on DVB_MPQ_DEMUX && !DVB_MPQ_TSPP1
-	help
-		Use this option if your HW does not have any
-		TSPP hardware support. All  demux tasks will be
-		performed in SW.
+	config DVB_MPQ_SW
+		bool "Software plugin"
+		help
+			Use this option if your HW does not have any TSPP hardware support
+endchoice
+

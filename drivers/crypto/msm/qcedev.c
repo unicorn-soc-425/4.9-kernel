@@ -1,7 +1,6 @@
-/*
- * QTI CE device driver.
+/* Qualcomm CE device driver.
  *
- * Copyright (c) 2010-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -35,7 +34,6 @@
 #include <crypto/hash.h>
 #include "qcedevi.h"
 #include "qce.h"
-#include "qcedev_smmu.h"
 
 #include <linux/compat.h>
 #include "compat_qcedev.h"
@@ -60,105 +58,6 @@ static DEFINE_MUTEX(send_cmd_lock);
 static DEFINE_MUTEX(qcedev_sent_bw_req);
 static DEFINE_MUTEX(hash_access_lock);
 
-MODULE_DEVICE_TABLE(of, qcedev_match);
-
-static const struct of_device_id qcedev_match[] = {
-	{	.compatible = "qcom,qcedev"},
-	{	.compatible = "qcom,qcedev,context-bank"},
-	{}
-};
-
-static int qcedev_control_clocks(struct qcedev_control *podev, bool enable)
-{
-	unsigned int control_flag;
-	int ret = 0;
-
-	if (podev->ce_support.req_bw_before_clk) {
-		if (enable)
-			control_flag = QCE_BW_REQUEST_FIRST;
-		else
-			control_flag = QCE_CLK_DISABLE_FIRST;
-	} else {
-		if (enable)
-			control_flag = QCE_CLK_ENABLE_FIRST;
-		else
-			control_flag = QCE_BW_REQUEST_RESET_FIRST;
-	}
-
-	switch (control_flag) {
-	case QCE_CLK_ENABLE_FIRST:
-		ret = qce_enable_clk(podev->qce);
-		if (ret) {
-			pr_err("%s Unable enable clk\n", __func__);
-			return ret;
-		}
-		ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 1);
-		if (ret) {
-			pr_err("%s Unable to set high bw\n", __func__);
-			ret = qce_disable_clk(podev->qce);
-			if (ret)
-				pr_err("%s Unable disable clk\n", __func__);
-			return ret;
-		}
-		break;
-	case QCE_BW_REQUEST_FIRST:
-		ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 1);
-		if (ret) {
-			pr_err("%s Unable to set high bw\n", __func__);
-			return ret;
-		}
-		ret = qce_enable_clk(podev->qce);
-		if (ret) {
-			pr_err("%s Unable enable clk\n", __func__);
-			ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 0);
-			if (ret)
-				pr_err("%s Unable to set low bw\n", __func__);
-			return ret;
-		}
-		break;
-	case QCE_CLK_DISABLE_FIRST:
-		ret = qce_disable_clk(podev->qce);
-		if (ret) {
-			pr_err("%s Unable to disable clk\n", __func__);
-			return ret;
-		}
-		ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 0);
-		if (ret) {
-			pr_err("%s Unable to set low bw\n", __func__);
-			ret = qce_enable_clk(podev->qce);
-			if (ret)
-				pr_err("%s Unable enable clk\n", __func__);
-			return ret;
-		}
-		break;
-	case QCE_BW_REQUEST_RESET_FIRST:
-		ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 0);
-		if (ret) {
-			pr_err("%s Unable to set low bw\n", __func__);
-			return ret;
-		}
-		ret = qce_disable_clk(podev->qce);
-		if (ret) {
-			pr_err("%s Unable to disable clk\n", __func__);
-			ret = msm_bus_scale_client_update_request(
-				podev->bus_scale_handle, 1);
-			if (ret)
-				pr_err("%s Unable to set high bw\n", __func__);
-			return ret;
-		}
-		break;
-	default:
-		return -ENOENT;
-	}
-
-	return 0;
-}
-
 static void qcedev_ce_high_bw_req(struct qcedev_control *podev,
 							bool high_bw_req)
 {
@@ -167,21 +66,47 @@ static void qcedev_ce_high_bw_req(struct qcedev_control *podev,
 	mutex_lock(&qcedev_sent_bw_req);
 	if (high_bw_req) {
 		if (podev->high_bw_req_count == 0) {
-			ret = qcedev_control_clocks(podev, true);
-			if (ret)
-				goto exit_unlock_mutex;
+			ret = qce_enable_clk(podev->qce);
+			if (ret) {
+				pr_err("%s Unable enable clk\n", __func__);
+				mutex_unlock(&qcedev_sent_bw_req);
+				return;
+			}
+			ret = msm_bus_scale_client_update_request(
+					podev->bus_scale_handle, 1);
+			if (ret) {
+				pr_err("%s Unable to set to high bandwidth\n",
+							__func__);
+				ret = qce_disable_clk(podev->qce);
+				mutex_unlock(&qcedev_sent_bw_req);
+				return;
+			}
 		}
 		podev->high_bw_req_count++;
 	} else {
 		if (podev->high_bw_req_count == 1) {
-			ret = qcedev_control_clocks(podev, false);
-			if (ret)
-				goto exit_unlock_mutex;
+			ret = msm_bus_scale_client_update_request(
+					podev->bus_scale_handle, 0);
+			if (ret) {
+				pr_err("%s Unable to set to low bandwidth\n",
+							__func__);
+				mutex_unlock(&qcedev_sent_bw_req);
+				return;
+			}
+			ret = qce_disable_clk(podev->qce);
+			if (ret) {
+				pr_err("%s Unable disable clk\n", __func__);
+				ret = msm_bus_scale_client_update_request(
+					podev->bus_scale_handle, 1);
+				if (ret)
+					pr_err("%s Unable to set to high bandwidth\n",
+							__func__);
+				mutex_unlock(&qcedev_sent_bw_req);
+				return;
+			}
 		}
 		podev->high_bw_req_count--;
 	}
-
-exit_unlock_mutex:
 	mutex_unlock(&qcedev_sent_bw_req);
 }
 
@@ -191,19 +116,13 @@ static int qcedev_open(struct inode *inode, struct file *file);
 static int qcedev_release(struct inode *inode, struct file *file);
 static int start_cipher_req(struct qcedev_control *podev);
 static int start_sha_req(struct qcedev_control *podev);
-static inline long qcedev_ioctl(struct file *file,
-				unsigned int cmd, unsigned long arg);
-
-#ifdef CONFIG_COMPAT
-#include "compat_qcedev.c"
-#else
-#define compat_qcedev_ioctl	NULL
-#endif
 
 static const struct file_operations qcedev_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = qcedev_ioctl,
+#ifdef CONFIG_COMPAT
 	.compat_ioctl = compat_qcedev_ioctl,
+#endif
 	.open = qcedev_open,
 	.release = qcedev_release,
 };
@@ -237,7 +156,7 @@ static struct dentry *_debug_dent;
 static char _debug_read_buf[DEBUG_MAX_RW_BUF];
 static int _debug_qcedev;
 
-static struct qcedev_control *qcedev_minor_to_control(unsigned int n)
+static struct qcedev_control *qcedev_minor_to_control(unsigned n)
 {
 	int i;
 
@@ -261,16 +180,16 @@ static int qcedev_open(struct inode *inode, struct file *file)
 	}
 
 	handle = kzalloc(sizeof(struct qcedev_handle), GFP_KERNEL);
-	if (handle == NULL)
+	if (handle == NULL) {
+		pr_err("Failed to allocate memory %ld\n",
+					PTR_ERR(handle));
 		return -ENOMEM;
+	}
 
 	handle->cntl = podev;
 	file->private_data = handle;
 	if (podev->platform_support.bus_scale_table != NULL)
 		qcedev_ce_high_bw_req(podev, true);
-
-	mutex_init(&handle->registeredbufs.lock);
-	INIT_LIST_HEAD(&handle->registeredbufs.list);
 	return 0;
 }
 
@@ -331,6 +250,8 @@ again:
 		new_req = NULL;
 		goto again;
 	}
+
+	return;
 }
 
 void qcedev_sha_req_cb(void *cookie, unsigned char *digest,
@@ -428,7 +349,7 @@ static int start_cipher_req(struct qcedev_control *podev)
 		(creq.mode == QCE_MODE_CTR)) {
 		creq.dir = QCE_ENCRYPT;
 	} else {
-		if (qcedev_areq->cipher_op_req.op == QCEDEV_OPER_ENC)
+		if (QCEDEV_OPER_ENC == qcedev_areq->cipher_op_req.op)
 			creq.dir = QCE_ENCRYPT;
 		else
 			creq.dir = QCE_DECRYPT;
@@ -527,6 +448,7 @@ static int start_sha_req(struct qcedev_control *podev)
 		pr_err("Algorithm %d not supported, exiting\n",
 			qcedev_areq->sha_op_req.alg);
 		return -EINVAL;
+		break;
 	};
 
 	qcedev_areq->sha_req.cookie = handle;
@@ -697,8 +619,11 @@ static int qcedev_sha_update_max_xfer(struct qcedev_async_req *qcedev_areq,
 
 	k_buf_src = kmalloc(total + CACHE_LINE_SIZE * 2,
 				GFP_KERNEL);
-	if (k_buf_src == NULL)
+	if (k_buf_src == NULL) {
+		pr_err("%s: Can't Allocate memory: k_buf_src 0x%lx\n",
+					__func__, (uintptr_t)k_buf_src);
 		return -ENOMEM;
+	}
 
 	k_align_src = (uint8_t *)ALIGN(((uintptr_t)k_buf_src),
 							CACHE_LINE_SIZE);
@@ -891,8 +816,11 @@ static int qcedev_sha_final(struct qcedev_async_req *qcedev_areq,
 	if (total) {
 		k_buf_src = kmalloc(total + CACHE_LINE_SIZE * 2,
 					GFP_KERNEL);
-		if (k_buf_src == NULL)
+		if (k_buf_src == NULL) {
+			pr_err("%s: Can't Allocate memory: k_buf_src 0x%lx\n",
+						__func__, (uintptr_t)k_buf_src);
 			return -ENOMEM;
+		}
 
 		k_align_src = (uint8_t *)ALIGN(((uintptr_t)k_buf_src),
 							CACHE_LINE_SIZE);
@@ -915,7 +843,6 @@ static int qcedev_sha_final(struct qcedev_async_req *qcedev_areq,
 	memset(&handle->sha_ctxt.trailing_buf[0], 0, 64);
 
 	kzfree(k_buf_src);
-	qcedev_areq->sha_req.sreq.src = NULL;
 	return err;
 }
 
@@ -940,8 +867,11 @@ static int qcedev_hash_cmac(struct qcedev_async_req *qcedev_areq,
 
 
 	k_buf_src = kmalloc(total, GFP_KERNEL);
-	if (k_buf_src == NULL)
+	if (k_buf_src == NULL) {
+		pr_err("%s: Can't Allocate memory: k_buf_src 0x%lx\n",
+				__func__, (uintptr_t)k_buf_src);
 		return -ENOMEM;
+	}
 
 	k_src = k_buf_src;
 
@@ -999,9 +929,9 @@ static int qcedev_set_hmac_auth_key(struct qcedev_async_req *areq,
 		memset(&authkey_areq.sha_op_req.digest[0], 0,
 						QCEDEV_MAX_SHA_DIGEST);
 		if (areq->sha_op_req.alg == QCEDEV_ALG_SHA1_HMAC)
-			authkey_areq.sha_op_req.alg = QCEDEV_ALG_SHA1;
+				authkey_areq.sha_op_req.alg = QCEDEV_ALG_SHA1;
 		if (areq->sha_op_req.alg == QCEDEV_ALG_SHA256_HMAC)
-			authkey_areq.sha_op_req.alg = QCEDEV_ALG_SHA256;
+				authkey_areq.sha_op_req.alg = QCEDEV_ALG_SHA256;
 
 		authkey_areq.op_type = QCEDEV_CRYPTO_OPER_SHA;
 
@@ -1040,8 +970,11 @@ static int qcedev_hmac_get_ohash(struct qcedev_async_req *qcedev_areq,
 		}
 	}
 	k_src = kmalloc(sha_block_size, GFP_KERNEL);
-	if (k_src == NULL)
+	if (k_src == NULL) {
+		pr_err("%s: Can't Allocate memory: k_src 0x%lx\n",
+						__func__, (uintptr_t)k_src);
 		return -ENOMEM;
+	}
 
 	/* check for trailing buffer from previous updates and append it */
 	memcpy(k_src, &handle->sha_ctxt.trailing_buf[0],
@@ -1079,7 +1012,6 @@ static int qcedev_hmac_get_ohash(struct qcedev_async_req *qcedev_areq,
 	handle->sha_ctxt.first_blk = 0;
 
 	kzfree(k_src);
-	qcedev_areq->sha_req.sreq.src = NULL;
 	return err;
 }
 
@@ -1234,22 +1166,19 @@ static int qcedev_vbuf_ablk_cipher_max_xfer(struct qcedev_async_req *areq,
 			if (err == 0 && copy_to_user(
 				(void __user *)creq->vbuf.dst[dst_i].vaddr,
 					(k_align_dst + byteoffset),
-					creq->vbuf.dst[dst_i].len)) {
-				err = -EFAULT;
-				goto exit;
-			}
+					creq->vbuf.dst[dst_i].len))
+					return -EFAULT;
 
-			k_align_dst += creq->vbuf.dst[dst_i].len;
+			k_align_dst += creq->vbuf.dst[dst_i].len +
+						byteoffset;
 			creq->data_len -= creq->vbuf.dst[dst_i].len;
 			dst_i++;
 		} else {
-			if (err == 0 && copy_to_user(
+				if (err == 0 && copy_to_user(
 				(void __user *)creq->vbuf.dst[dst_i].vaddr,
-					(k_align_dst + byteoffset),
-				creq->data_len)) {
-				err = -EFAULT;
-				goto exit;
-			}
+				(k_align_dst + byteoffset),
+				creq->data_len))
+					return -EFAULT;
 
 			k_align_dst += creq->data_len;
 			creq->vbuf.dst[dst_i].len -= creq->data_len;
@@ -1258,9 +1187,7 @@ static int qcedev_vbuf_ablk_cipher_max_xfer(struct qcedev_async_req *areq,
 		}
 	}
 	*di = dst_i;
-exit:
-	areq->cipher_req.creq.src = NULL;
-	areq->cipher_req.creq.dst = NULL;
+
 	return err;
 };
 
@@ -1288,14 +1215,19 @@ static int qcedev_vbuf_ablk_cipher(struct qcedev_async_req *areq,
 		byteoffset = areq->cipher_op_req.byteoffset;
 	k_buf_src = kmalloc(QCE_MAX_OPER_DATA + CACHE_LINE_SIZE * 2,
 				GFP_KERNEL);
-	if (k_buf_src == NULL)
+	if (k_buf_src == NULL) {
+		pr_err("%s: Can't Allocate memory: k_buf_src 0x%lx\n",
+					__func__, (uintptr_t)k_buf_src);
 		return -ENOMEM;
+	}
 	k_align_src = (uint8_t *)ALIGN(((uintptr_t)k_buf_src),
 							CACHE_LINE_SIZE);
 	max_data_xfer = QCE_MAX_OPER_DATA - byteoffset;
 
 	saved_req = kmalloc(sizeof(struct qcedev_cipher_op_req), GFP_KERNEL);
 	if (saved_req == NULL) {
+		pr_err("%s: Can't Allocate memory:saved_req 0x%lx\n",
+			__func__, (uintptr_t)saved_req);
 		kzfree(k_buf_src);
 		return -ENOMEM;
 
@@ -1424,7 +1356,6 @@ static int qcedev_check_cipher_key(struct qcedev_cipher_op_req *req,
 	 */
 	if (req->encklen == 0) {
 		int i;
-
 		for (i = 0; i < QCEDEV_MAX_KEY_SIZE; i++) {
 			if (req->enckey[i]) {
 				pr_err("%s: Invalid key: non-zero key input\n",
@@ -1662,8 +1593,7 @@ sha_error:
 	return -EINVAL;
 }
 
-static inline long qcedev_ioctl(struct file *file,
-				unsigned int cmd, unsigned long arg)
+long qcedev_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 {
 	int err = 0;
 	struct qcedev_handle *handle;
@@ -1712,7 +1642,6 @@ static inline long qcedev_ioctl(struct file *file,
 	case QCEDEV_IOCTL_SHA_INIT_REQ:
 		{
 		struct scatterlist sg_src;
-
 		if (copy_from_user(&qcedev_areq.sha_op_req,
 					(void __user *)arg,
 					sizeof(struct qcedev_sha_op_req)))
@@ -1741,7 +1670,6 @@ static inline long qcedev_ioctl(struct file *file,
 	case QCEDEV_IOCTL_SHA_UPDATE_REQ:
 		{
 		struct scatterlist sg_src;
-
 		if (copy_from_user(&qcedev_areq.sha_op_req,
 					(void __user *)arg,
 					sizeof(struct qcedev_sha_op_req)))
@@ -1771,7 +1699,6 @@ static inline long qcedev_ioctl(struct file *file,
 				return err;
 			}
 		}
-
 		if (handle->sha_ctxt.diglen > QCEDEV_MAX_SHA_DIGEST) {
 			pr_err("Invalid sha_ctxt.diglen %d\n",
 					handle->sha_ctxt.diglen);
@@ -1829,7 +1756,6 @@ static inline long qcedev_ioctl(struct file *file,
 	case QCEDEV_IOCTL_GET_SHA_REQ:
 		{
 		struct scatterlist sg_src;
-
 		if (copy_from_user(&qcedev_areq.sha_op_req,
 					(void __user *)arg,
 					sizeof(struct qcedev_sha_op_req)))
@@ -1868,70 +1794,15 @@ static inline long qcedev_ioctl(struct file *file,
 		}
 		break;
 
-	case QCEDEV_IOCTL_MAP_BUF_REQ:
-		{
-			unsigned long long vaddr = 0;
-			struct qcedev_map_buf_req map_buf = { {0} };
-			int i = 0;
-
-			if (copy_from_user(&map_buf,
-					(void __user *)arg, sizeof(map_buf)))
-				return -EFAULT;
-
-			for (i = 0; i < map_buf.num_fds; i++) {
-				err = qcedev_check_and_map_buffer(handle,
-						map_buf.fd[i],
-						map_buf.fd_offset[i],
-						map_buf.fd_size[i],
-						&vaddr);
-				if (err) {
-					pr_err(
-						"%s: err: failed to map fd(%d) - %d\n",
-						__func__, map_buf.fd[i], err);
-					return err;
-				}
-				map_buf.buf_vaddr[i] = vaddr;
-				pr_info("%s: info: vaddr = %llx\n",
-					__func__, vaddr);
-			}
-
-			if (copy_to_user((void __user *)arg, &map_buf,
-					sizeof(map_buf)))
-				return -EFAULT;
-			break;
-		}
-
-	case QCEDEV_IOCTL_UNMAP_BUF_REQ:
-		{
-			struct qcedev_unmap_buf_req unmap_buf = { { 0 } };
-			int i = 0;
-
-			if (copy_from_user(&unmap_buf,
-					(void __user *)arg, sizeof(unmap_buf)))
-				return -EFAULT;
-
-			for (i = 0; i < unmap_buf.num_fds; i++) {
-				err = qcedev_check_and_unmap_buffer(handle,
-						unmap_buf.fd[i]);
-				if (err) {
-					pr_err(
-						"%s: err: failed to unmap fd(%d) - %d\n",
-						 __func__,
-						unmap_buf.fd[i], err);
-					return err;
-				}
-			}
-			break;
-		}
-
 	default:
 		return -ENOTTY;
 	}
 
 	return err;
 }
+EXPORT_SYMBOL(qcedev_ioctl);
 
-static int qcedev_probe_device(struct platform_device *pdev)
+static int qcedev_probe(struct platform_device *pdev)
 {
 	void *handle = NULL;
 	int rc = 0;
@@ -1944,53 +1815,36 @@ static int qcedev_probe_device(struct platform_device *pdev)
 	INIT_LIST_HEAD(&podev->ready_commands);
 	podev->active_command = NULL;
 
-	INIT_LIST_HEAD(&podev->context_banks);
-
 	spin_lock_init(&podev->lock);
 
 	tasklet_init(&podev->done_tasklet, req_done, (unsigned long)podev);
 
-	podev->platform_support.bus_scale_table = (struct msm_bus_scale_pdata *)
-					msm_bus_cl_get_pdata(pdev);
-	if (!podev->platform_support.bus_scale_table) {
-		pr_err("bus_scale_table is NULL\n");
-		return -ENODATA;
-	}
-	podev->bus_scale_handle = msm_bus_scale_register_client(
-				(struct msm_bus_scale_pdata *)
-				podev->platform_support.bus_scale_table);
-	if (!podev->bus_scale_handle) {
-		pr_err("%s not able to get bus scale\n", __func__);
-		return -ENOMEM;
-	}
-
-	rc = msm_bus_scale_client_update_request(podev->bus_scale_handle, 1);
-	if (rc) {
-		pr_err("%s Unable to set to high bandwidth\n", __func__);
-		goto exit_unregister_bus_scale;
-	}
+	/* open qce */
 	handle = qce_open(pdev, &rc);
 	if (handle == NULL) {
-		rc = -ENODEV;
-		goto exit_scale_busbandwidth;
-	}
-	rc = msm_bus_scale_client_update_request(podev->bus_scale_handle, 0);
-	if (rc) {
-		pr_err("%s Unable to set to low bandwidth\n", __func__);
-		goto exit_qce_close;
+		platform_set_drvdata(pdev, NULL);
+		return rc;
 	}
 
 	podev->qce = handle;
 	podev->pdev = pdev;
 	platform_set_drvdata(pdev, podev);
 
+	rc = misc_register(&podev->miscdevice);
 	qce_hw_support(podev->qce, &podev->ce_support);
 	if (podev->ce_support.bam) {
 		podev->platform_support.ce_shared = 0;
 		podev->platform_support.shared_ce_resource = 0;
 		podev->platform_support.hw_key_support =
 						podev->ce_support.hw_key;
+		podev->platform_support.bus_scale_table = NULL;
 		podev->platform_support.sha_hmac = 1;
+
+		podev->platform_support.bus_scale_table =
+			(struct msm_bus_scale_pdata *)
+					msm_bus_cl_get_pdata(pdev);
+		if (!podev->platform_support.bus_scale_table)
+			pr_err("bus_scale_table is NULL\n");
 	} else {
 		platform_support =
 			(struct msm_ce_hw_support *)pdev->dev.platform_data;
@@ -1999,62 +1853,37 @@ static int qcedev_probe_device(struct platform_device *pdev)
 				platform_support->shared_ce_resource;
 		podev->platform_support.hw_key_support =
 				platform_support->hw_key_support;
+		podev->platform_support.bus_scale_table =
+				platform_support->bus_scale_table;
 		podev->platform_support.sha_hmac = platform_support->sha_hmac;
 	}
-
-	rc = misc_register(&podev->miscdevice);
-	if (rc) {
-		pr_err("%s: err: register failed for misc: %d\n", __func__, rc);
-		goto exit_qce_close;
+	if (podev->platform_support.bus_scale_table != NULL) {
+		podev->bus_scale_handle =
+			msm_bus_scale_register_client(
+				(struct msm_bus_scale_pdata *)
+				podev->platform_support.bus_scale_table);
+		if (!podev->bus_scale_handle) {
+			pr_err("%s not able to get bus scale\n",
+				__func__);
+			rc =  -ENOMEM;
+			goto err;
+		}
 	}
 
-	podev->mem_client = qcedev_mem_new_client(MEM_ION);
-	if (!podev->mem_client) {
-		pr_err("%s: err: qcedev_mem_new_client failed\n", __func__);
-		goto err;
-	}
-
-	rc = of_platform_populate(pdev->dev.of_node, qcedev_match,
-			NULL, &pdev->dev);
-	if (rc) {
-		pr_err("%s: err: of_platform_populate failed: %d\n",
-			__func__, rc);
-		goto err;
-	}
-
-	return 0;
-
+	if (rc >= 0)
+		return 0;
+	else
+		if (podev->platform_support.bus_scale_table != NULL)
+			msm_bus_scale_unregister_client(
+						podev->bus_scale_handle);
 err:
-	if (podev->mem_client)
-		qcedev_mem_delete_client(podev->mem_client);
-	podev->mem_client = NULL;
 
-	misc_deregister(&podev->miscdevice);
-exit_qce_close:
 	if (handle)
 		qce_close(handle);
-exit_scale_busbandwidth:
-	msm_bus_scale_client_update_request(podev->bus_scale_handle, 0);
-exit_unregister_bus_scale:
-	if (podev->platform_support.bus_scale_table != NULL)
-		msm_bus_scale_unregister_client(podev->bus_scale_handle);
-	podev->bus_scale_handle = 0;
 	platform_set_drvdata(pdev, NULL);
-	podev->pdev = NULL;
 	podev->qce = NULL;
-
+	podev->pdev = NULL;
 	return rc;
-}
-
-static int qcedev_probe(struct platform_device *pdev)
-{
-	if (of_device_is_compatible(pdev->dev.of_node, "qcom,qcedev"))
-		return qcedev_probe_device(pdev);
-	else if (of_device_is_compatible(pdev->dev.of_node,
-		"qcom,qcedev,context-bank"))
-		return qcedev_parse_context_bank(pdev);
-
-	return -EINVAL;
 };
 
 static int qcedev_remove(struct platform_device *pdev)
@@ -2080,7 +1909,6 @@ static int qcedev_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct qcedev_control *podev;
 	int ret;
-
 	podev = platform_get_drvdata(pdev);
 
 	if (!podev || !podev->platform_support.bus_scale_table)
@@ -2088,9 +1916,23 @@ static int qcedev_suspend(struct platform_device *pdev, pm_message_t state)
 
 	mutex_lock(&qcedev_sent_bw_req);
 	if (podev->high_bw_req_count) {
-		ret = qcedev_control_clocks(podev, false);
-		if (ret)
+		ret = msm_bus_scale_client_update_request(
+				podev->bus_scale_handle, 0);
+		if (ret) {
+			pr_err("%s Unable to set to low bandwidth\n",
+						__func__);
 			goto suspend_exit;
+		}
+		ret = qce_disable_clk(podev->qce);
+		if (ret) {
+			pr_err("%s Unable disable clk\n", __func__);
+			ret = msm_bus_scale_client_update_request(
+				podev->bus_scale_handle, 1);
+			if (ret)
+				pr_err("%s Unable to set to high bandwidth\n",
+					__func__);
+			goto suspend_exit;
+		}
 	}
 
 suspend_exit:
@@ -2102,7 +1944,6 @@ static int qcedev_resume(struct platform_device *pdev)
 {
 	struct qcedev_control *podev;
 	int ret;
-
 	podev = platform_get_drvdata(pdev);
 
 	if (!podev || !podev->platform_support.bus_scale_table)
@@ -2110,15 +1951,34 @@ static int qcedev_resume(struct platform_device *pdev)
 
 	mutex_lock(&qcedev_sent_bw_req);
 	if (podev->high_bw_req_count) {
-		ret = qcedev_control_clocks(podev, true);
-		if (ret)
+		ret = qce_enable_clk(podev->qce);
+		if (ret) {
+			pr_err("%s Unable enable clk\n", __func__);
 			goto resume_exit;
+		}
+		ret = msm_bus_scale_client_update_request(
+				podev->bus_scale_handle, 1);
+		if (ret) {
+			pr_err("%s Unable to set to high bandwidth\n",
+						__func__);
+			ret = qce_disable_clk(podev->qce);
+			if (ret)
+				pr_err("%s Unable enable clk\n",
+					__func__);
+			goto resume_exit;
+		}
 	}
 
 resume_exit:
 	mutex_unlock(&qcedev_sent_bw_req);
 	return 0;
 }
+
+static struct of_device_id qcedev_match[] = {
+	{	.compatible = "qcom,qcedev",
+	},
+	{}
+};
 
 static struct platform_driver qcedev_plat_driver = {
 	.probe = qcedev_probe,
@@ -2139,7 +1999,7 @@ static int _disp_stats(int id)
 
 	pstat = &_qcedev_stat;
 	len = scnprintf(_debug_read_buf, DEBUG_MAX_RW_BUF - 1,
-			"\nQTI QCE dev driver %d Statistics:\n",
+			"\nQualcomm QCE dev driver %d Statistics:\n",
 				id + 1);
 
 	len += scnprintf(_debug_read_buf + len, DEBUG_MAX_RW_BUF - len - 1,
@@ -2239,7 +2099,7 @@ static void qcedev_exit(void)
 }
 
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("QTI DEV Crypto driver");
+MODULE_DESCRIPTION("Qualcomm DEV Crypto driver");
 
 module_init(qcedev_init);
 module_exit(qcedev_exit);

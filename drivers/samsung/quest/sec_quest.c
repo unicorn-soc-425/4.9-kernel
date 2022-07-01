@@ -59,8 +59,6 @@ struct mutex sysfs_common_lock;
 struct delayed_work trigger_quest_work;
 #define WAIT_TIME_BEFORE_TRIGGER_MSECS 60000
 #endif
-static int call_main_qdaf_after_finighing_main_quest = 0;	// 0:NOT_RUN 1:SHOULD_RUN
-static int boot_count;
 
 
 /* Please sync with enum quest_enum_item in sec_qeust.h */
@@ -108,26 +106,6 @@ char *STR_SUBITEM[SUBITEM_ITEMSCOUNT] = {
 
 
 //////////////////////////////////////////////////
-/////// panic notifier functions /////////////////
-//////////////////////////////////////////////////
-static int quest_debug_panic_handler(struct notifier_block *nb,
-		unsigned long l, void *buf)
-{
-	QUEST_PRINT("%s : print param_quest_data\n", __func__);
-	quest_print_param_quest_data();
-
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block quest_panic_block = {
-	.notifier_call = quest_debug_panic_handler,
-
-};
-
-//////////////////////////////////////////////////
-
-
-//////////////////////////////////////////////////
 /////// helper functions /////////////////////////////
 //////////////////////////////////////////////////
 static int call_user_prg( char **argv, int wait )
@@ -152,7 +130,7 @@ static int call_user_prg( char **argv, int wait )
 
 static int do_quest()
 {
-	char *argv[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
+	char *argv[4] = { NULL, NULL, NULL, NULL };
 	int ret;
 
 	char log_path[50] = { '\0', };
@@ -170,20 +148,6 @@ static int do_quest()
 #endif
 			break;
 		case STEP_CAL1:
-#if defined(CONFIG_SEC_QUEST_CAL_HLOS_SUPPORT_FUSION)				
-			argv[0] = QUESTHLOS_PROG_MAIN_CAL;
-			snprintf(log_path, 50, "logPath:%s\0", CAL_QUEST_LOGPATH); 
-			argv[1] = log_path;
-			argv[2] = "Reboot";
-			QUEST_PRINT("reboot option enabled \n");
-			argv[3] = "hlosTestDisabled:1\0";
-			QUEST_PRINT("hlosTestDisabled option enabled \n");			
-			argv[4] = "fusionTestEnabled:1\0";
-			QUEST_PRINT("fusionTestEnabled option enabled \n");
-			argv[5] = "qdafTestEnabled:1\0";
-			QUEST_PRINT("qdafTestEnabled option enabled \n");			
-			break;
-#endif			
 		case STEP_CALX:
 			argv[0] = QUESTHLOS_PROG_MAIN_CAL;
 			snprintf(log_path, 50, "logPath:%s\0", CAL_QUEST_LOGPATH); 
@@ -196,12 +160,8 @@ static int do_quest()
 			snprintf(log_path, 50, "logPath:%s\0", MAIN_QUEST_LOGPATH); 
 			argv[1] = log_path;
 			argv[2] = "Reboot";
-			QUEST_PRINT("reboot option enabled \n");			
 			argv[3] = "1800";
-#if defined(CONFIG_SEC_QUEST_MAIN_HLOS_SUPPORT_FUSION)			
-			argv[4] = "fusionTestEnabled:1\0";
-			QUEST_PRINT("fusionTestEnabled option enabled \n");
-#endif
+			QUEST_PRINT("reboot option enabled \n");
 			break;
 		default:
 			QUEST_PRINT("invalid step\n");
@@ -236,7 +196,7 @@ static void move_questresult_to_sub_dir(int quest_step)
 	call_user_prg(argv, UMH_WAIT_PROC);	
 }
 
-static int call_quest_debugging_sh(char* action, int wait)
+static void call_quest_debugging_sh(char* action, int wait)
 {
 	char *argv[4] = { NULL, NULL, NULL, NULL };
 	char step_str[10];
@@ -247,10 +207,10 @@ static int call_quest_debugging_sh(char* action, int wait)
 	argv[1] = action;
 	snprintf(step_str, 10, "step:%d\0", param_quest_data.curr_step);
 	argv[2] = step_str;
-	return call_user_prg(argv, wait);
+	call_user_prg(argv, wait);
 }
 
-static enum quest_enum_item_result check_item_result( uint64_t item_result, uint32_t max_cnt )
+enum quest_enum_item_result check_item_result( uint64_t item_result, uint32_t max_cnt )
 {
 	enum quest_enum_item_result result;
 	int iCnt;
@@ -258,43 +218,17 @@ static enum quest_enum_item_result check_item_result( uint64_t item_result, uint
 	if( item_result == 0 )
 		return ITEM_RESULT_NONE;
 
-	// check fail first
 	for( iCnt=1; iCnt<max_cnt; iCnt++ ) 
 	{
 		result = QUEST_GET_ITEM_SUBITEM_RESULT(item_result, iCnt);
 		if( result == ITEM_RESULT_FAIL )
 			return ITEM_RESULT_FAIL;
-	}
-
-	// check incompleted
-	for( iCnt=1; iCnt<max_cnt; iCnt++ ) 
-	{
-		result = QUEST_GET_ITEM_SUBITEM_RESULT(item_result, iCnt);
-		if( result == ITEM_RESULT_INCOMPLETED )
+		else if( result == ITEM_RESULT_INCOMPLETED )
 			return ITEM_RESULT_INCOMPLETED;
 	}
 
 	return ITEM_RESULT_PASS;
 }
-
-static int check_if_incompleted_item_result_exist( uint64_t item_result, uint32_t max_cnt )
-{
-	enum quest_enum_item_result result;
-	int iCnt;
-
-	if( item_result == 0 )
-		return 0;
-
-	for( iCnt=1; iCnt<max_cnt; iCnt++ ) 
-	{
-		result = QUEST_GET_ITEM_SUBITEM_RESULT(item_result, iCnt);
-		if( result == ITEM_RESULT_INCOMPLETED )
-			return 1;
-	}
-
-	return 0;
-}
-
 
 // check smd_subitem_result and return result string
 static int get_smd_subitem_result_string(char *buf, int piece)
@@ -333,33 +267,6 @@ static int get_smd_subitem_result_string(char *buf, int piece)
 
 	return failed_cnt;
 }
-
-static void check_and_update_qdaf_result()
-{
-	int qdaf_failed_cnt;
-	
-	// get result of ITEM_SMDDLQDAF 
-	qdaf_failed_cnt = get_qdaf_failed_cnt();
-	if( qdaf_failed_cnt > 0 ) {
-		QUEST_PRINT("%s : ITEM_SMDDLQDAF was failed (failed_cnt=%d)\n", __func__, qdaf_failed_cnt);
-		QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, ITEM_SMDDLQDAF, ITEM_RESULT_FAIL);
-		QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_subitem_result, SUBITEM_SMDDLQDAF, ITEM_RESULT_FAIL);
-	}else {
-		QUEST_PRINT("%s : ITEM_SMDDLQDAF was succeeded\n", __func__ );
-		QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, ITEM_SMDDLQDAF, ITEM_RESULT_PASS);
-		QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_subitem_result, SUBITEM_SMDDLQDAF, ITEM_RESULT_PASS);				
-	}
-	quest_sync_param_quest_data();
-}
-
-static void run_qdaf_in_background(enum quest_qdaf_action_t action)
-{
-	QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, ITEM_SMDDLQDAF, ITEM_RESULT_INCOMPLETED);	
-	QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_subitem_result, SUBITEM_SMDDLQDAF, ITEM_RESULT_INCOMPLETED);
-	quest_sync_param_quest_data();		
-	call_qdaf_from_quest_driver(action, UMH_WAIT_EXEC);
-}
-
 //////////////////////////////////////////////////
 
 
@@ -372,23 +279,8 @@ static void make_debugging_files()
 	// refer to qpnp_pon_reason (index=boot_reason-1)
 	QUEST_PRINT("%s : boot_reason was %d\n", __func__, boot_reason);
 
-	// updatebootcount
-	// do not call this with UMH_WAIT_PROC. it can cause race condition with init thread
-	call_quest_debugging_sh("action:updatebootcount\0", UMH_WAIT_EXEC);
-	msleep(1000);
-
-	boot_count = call_quest_debugging_sh("action:getbootcount\0", UMH_WAIT_PROC);
-	boot_count = (boot_count>=0)? (boot_count>>8) : 0;
-	QUEST_PRINT("%s : boot_count = %d\n", __func__, boot_count);
-
-	// ls
-	call_quest_debugging_sh("action:ls\0", UMH_WAIT_PROC);
-
-	// resethist
-	call_quest_debugging_sh("action:resethist\0", UMH_WAIT_PROC);	
-
-	// lastkmsg
-	call_quest_debugging_sh("action:lastkmsg\0", UMH_WAIT_PROC);
+	// all : ls + updatebootcount + resethist + lastkmsg (except backupdumps)
+	call_quest_debugging_sh("action:all\0", UMH_WAIT_PROC);		
 }
 
 // TODO
@@ -400,68 +292,56 @@ static void check_abnormal_param()
 }
 
 
-
-
 // initialize step for smd, cal and main
 // move uefi log to output_log_path
 static void setup_scenario()
 {
 	switch (param_quest_data.curr_step) {
 	case STEP_SMDDL: {
-		enum quest_enum_item_result qdaf_item_result, hlos_item_result;
-		uint64_t smd_item_result_without_qdaf;
-		int exist_incompleted=0;
-		
+		int qdaf_failed_cnt, item_result;
+
 		// smd scenario
 		QUEST_PRINT("%s : (step=%d) smd scenario\n", __func__, STEP_SMDDL);
 
 		// move boot questresult files to SMD directory
 		move_questresult_to_sub_dir(STEP_SMDDL);
 
-		// check current result for determining next action
-		qdaf_item_result = QUEST_GET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, ITEM_SMDDLQDAF);
-		hlos_item_result = QUEST_GET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, QUESTHLOS_HLOS_ITEM_SMD);
-		smd_item_result_without_qdaf = param_quest_data.smd_item_result;
-		QUEST_SET_ITEM_SUBITEM_RESULT(smd_item_result_without_qdaf, ITEM_SMDDLQDAF, ITEM_RESULT_PASS);
-		exist_incompleted = check_if_incompleted_item_result_exist(smd_item_result_without_qdaf, ITEM_ITEMSCOUNT);		
-
-		if( qdaf_item_result == ITEM_RESULT_INCOMPLETED ) {
-			// first boot -> run boot items -> android boot 
-			//   -> run quest_hlos -> ITEM_SMDDLQDAF -> JIG POWER OFF -> boot ?
-			// let's write the result of SMDDL QDAF and initilize step
+		// first boot -> run boot items -> android boot 
+		//   -> run quest_hlos -> ITEM_SMDDLQDAF -> JIG POWER OFF -> boot ?
+		// let's write the result of SMDDL QDAF and initilize step
+		item_result = QUEST_GET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, ITEM_SMDDLQDAF);
+		if( item_result == ITEM_RESULT_INCOMPLETED ) {
 			QUEST_PRINT("%s : (step=%d) maybe booting after executing ITEM_SMDDLQDAF\n", 
 				__func__, STEP_SMDDL);
 
-			check_and_update_qdaf_result();
-			quest_initialize_curr_step();			
-		}else if ( hlos_item_result == ITEM_RESULT_INCOMPLETED ) {
-			// first boot -> run boot items -> android boot -> quest_hlos
-			//   -> enter to upload mode (or smpl) without starting ITEM_SMDDLQDAF -> JIG POWER OFF -> boot ?
-			// let's  initilize step
+			// get result of ITEM_SMDDLQDAF 
+			qdaf_failed_cnt = get_qdaf_failed_cnt();
+			if( qdaf_failed_cnt > 0 ) {
+				QUEST_PRINT("%s : ITEM_SMDDLQDAF was failed (failed_cnt=%d)\n", __func__, qdaf_failed_cnt);
+				QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, ITEM_SMDDLQDAF, ITEM_RESULT_FAIL);
+				QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_subitem_result, SUBITEM_SMDDLQDAF, ITEM_RESULT_FAIL);
+			}else {
+				QUEST_PRINT("%s : ITEM_SMDDLQDAF was succeeded\n", __func__ );
+				QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, ITEM_SMDDLQDAF, ITEM_RESULT_PASS);
+				QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_subitem_result, SUBITEM_SMDDLQDAF, ITEM_RESULT_PASS);				
+			}			
+
+			// initialize step			
+			param_quest_data.curr_step = STEP_NONE;
+			quest_sync_param_quest_data();
+		}		
+
+		// first boot -> run boot items -> android boot -> quest_hlos
+		//   -> enter to upload mode (or smpl) without starting ITEM_SMDDLQDAF -> JIG POWER OFF -> boot ?
+		// let's  initilize step
+		item_result = QUEST_GET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, QUESTHLOS_HLOS_ITEM_SMD);
+		if( item_result == ITEM_RESULT_INCOMPLETED ) {
 			QUEST_PRINT("%s : (step=%d) reboot while running quest_hlos\n", __func__);
 			QUEST_PRINT("%s : Let's check lastkmsg\n", __func__);
 
-			quest_initialize_curr_step();
-		}else if( exist_incompleted == 1 )
-		{
-			// first boot -> run boot items -> incompleted -> android boot
-			// let's ignore running hlos and just run smddl qdaf 
-			//  (do not update smd_subitem for QUESTHLOS_HLOS_ITEM_SMD)
-			QUEST_PRINT("%s : (step=%d) incompleted at boot items, so ignore running hlos and just run smddl qdaf\n", __func__);
-
-			QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, QUESTHLOS_HLOS_ITEM_SMD, ITEM_RESULT_INCOMPLETED);
+			// initialize step
+			param_quest_data.curr_step = STEP_NONE;
 			quest_sync_param_quest_data();
-
-			// trigger SMDDL QDAF in background only if SMDDL line
-			if( boot_count == 1 ) {
-				QUEST_PRINT("%s : SMDDL line, so run SMDDL QDAF\n", __func__);
-				run_qdaf_in_background(QUEST_QDAF_ACTION_CONTROL_START_WITHOUT_PANIC);
-			}
-			else {
-				QUEST_PRINT("%s : ERASE seq, so do not run SMDDL QDAF and finish step\n", __func__);
-				check_and_update_qdaf_result();
-				quest_initialize_curr_step();
-			}		
 		}
 		
 		break;
@@ -479,7 +359,8 @@ static void setup_scenario()
 			QUEST_PRINT("%s : scenario ends\n", __func__);
 
 			// initialize step
-			quest_initialize_curr_step();
+			param_quest_data.curr_step = STEP_NONE;
+			quest_sync_param_quest_data();
 		}
 			
 		break;
@@ -493,26 +374,10 @@ static void setup_scenario()
 		move_questresult_to_sub_dir(STEP_MAIN);
 		
 		// initialize step			
-		quest_initialize_curr_step();
-
-		// will run run_qdaf_in_background() later
-		call_main_qdaf_after_finighing_main_quest = 1;
+		param_quest_data.curr_step = STEP_NONE;
+		quest_sync_param_quest_data();
 		
 		break;
-	default: {
-		int qdaf_failed_cnt;
-
-		QUEST_PRINT("%s : (step=%d) default actions \n", __func__, param_quest_data.curr_step); 
-		
-		// default action #1
-		//    : get qdaf result to check if qdaf was executed before boot and it was failed
-		qdaf_failed_cnt = get_qdaf_failed_cnt();
-		QUEST_PRINT("%s : qdaf failed_cnt = %d\n", __func__, qdaf_failed_cnt);
-
-		// default action #2
-		// ...
-		
-		}
 	}
 
 }
@@ -543,6 +408,10 @@ static void __initialize()
 
 	// setup scenario
 	setup_scenario();
+	
+	// ls
+	QUEST_PRINT("%s : after initializing\n", __func__);
+	call_quest_debugging_sh("action:ls\0", UMH_WAIT_PROC);
 
 	QUEST_PRINT("%s ---\n", __func__);
 }
@@ -602,16 +471,11 @@ static ssize_t store_quest_end(struct device *dev,
 		quest_sync_param_quest_data();
 #endif
 
-		// trigger SMDDL QDAF in background only if SMDDL line
-		if( boot_count == 1 ) {
-			QUEST_PRINT("%s : SMDDL line, so run SMDDL QDAF\n", __func__);
-			run_qdaf_in_background(QUEST_QDAF_ACTION_CONTROL_START_WITHOUT_PANIC);
-		}
-		else {
-			QUEST_PRINT("%s : ERASE seq, so do not run SMDDL QDAF and finish step\n", __func__);
-			check_and_update_qdaf_result();
-			quest_initialize_curr_step();
-		}
+		// trigger SMDDL QDAF in background
+		QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_item_result, ITEM_SMDDLQDAF, ITEM_RESULT_INCOMPLETED);	
+		QUEST_SET_ITEM_SUBITEM_RESULT(param_quest_data.smd_subitem_result, SUBITEM_SMDDLQDAF, ITEM_RESULT_INCOMPLETED);
+		quest_sync_param_quest_data();		
+		call_qdaf_from_quest_driver(QUEST_QDAF_ACTION_CONTROL_START_WITHOUT_PANIC, UMH_WAIT_EXEC);
 
 		// send "NAD_TEST=DONE" to factory app
 		kobject_uevent_env(&dev->kobj, KOBJ_CHANGE, quest_uevent.envp);	
@@ -643,7 +507,8 @@ static ssize_t store_quest_end(struct device *dev,
 #if defined(CONFIG_SEC_QUEST_UEFI_ENHANCEMENT)
 			param_quest_data.suefi_remained_count = 0;
 #endif
-			quest_initialize_curr_step();
+			param_quest_data.curr_step = STEP_NONE;
+			quest_sync_param_quest_data();
 
 			// triger panic
 			QUEST_PRINT("%s : trigger panic\n", __func__);
@@ -861,7 +726,6 @@ static ssize_t show_quest_stat(struct device *dev,
 	enum quest_enum_item_result total_result = ITEM_RESULT_NONE;
 	uint64_t smd_item_result_without_qdaf;
 	ssize_t count = 0;
-	int exist_incompleted=0;
 
 	QUEST_SYSFS_ENTER();
 
@@ -869,8 +733,7 @@ static ssize_t show_quest_stat(struct device *dev,
 	if( qdaf_result==ITEM_RESULT_PASS || qdaf_result==ITEM_RESULT_FAIL )
 	{
 		QUEST_PRINT("%s : ITEM_SMDDLQDAF was completed, so include its result into total_result\n", __func__);
-		total_result = check_item_result(param_quest_data.smd_item_result, ITEM_ITEMSCOUNT);
-		exist_incompleted = check_if_incompleted_item_result_exist(param_quest_data.smd_item_result, ITEM_ITEMSCOUNT);
+		total_result = check_item_result(param_quest_data.smd_item_result, ITEM_ITEMSCOUNT);		
 	}else
 	{
 		// check smd_item_result
@@ -880,21 +743,15 @@ static ssize_t show_quest_stat(struct device *dev,
 		smd_item_result_without_qdaf = param_quest_data.smd_item_result;
 		QUEST_SET_ITEM_SUBITEM_RESULT(smd_item_result_without_qdaf, ITEM_SMDDLQDAF, ITEM_RESULT_PASS);
 		total_result = check_item_result(smd_item_result_without_qdaf, ITEM_ITEMSCOUNT);
-		exist_incompleted = check_if_incompleted_item_result_exist(smd_item_result_without_qdaf, ITEM_ITEMSCOUNT);
 	}	
 	QUEST_PRINT("%s : smd_item_result(%x) total_result(%d)\n",
 				__func__, param_quest_data.smd_item_result, total_result);
 
-	if( total_result == ITEM_RESULT_FAIL && exist_incompleted )
-	{
-		QUEST_PRINT("%s : in this case, the total_result is FAIL, but curr_step is none due to incompleted subitem\n", __func__);
-		QUEST_PRINT("%s : let's skip hlos subitem as the policy with incompletion\n", __func__);
-	}
 	// If the total_result is ITEM_RESULT_INCOMPLETED before running HLOS,
 	//   it means the DDRSCAN, QUEFI or SUEFI was not completed.
 	//   So we do not have to run HLOS and set the smd result as REWORK.
 	// Otherwise, the followings are needed.
-	else if( total_result != ITEM_RESULT_INCOMPLETED ) {
+	if( total_result != ITEM_RESULT_INCOMPLETED ) {
 
 		// This function check NOT_TESTED and TESTING using only the result of quest_hlos 
 		//  regardless of its existence at STEP_SMDDL
@@ -1148,13 +1005,6 @@ static ssize_t show_quest_main(struct device *dev,
 	enum quest_enum_item_result total_result = ITEM_RESULT_NONE;
 
 	QUEST_SYSFS_ENTER();
-
-	if( call_main_qdaf_after_finighing_main_quest == 1 ) {
-	
-		QUEST_PRINT("%s : call MAIN QDAF\n", __func__);	
-		// trigger MAIN QDAF in background
-		run_qdaf_in_background(QUEST_QDAF_ACTION_CONTROL_START_WITH_PANIC);
-	}
 
 	total_result = check_item_result(param_quest_data.main_item_result, ITEM_ITEMSCOUNT);	
 	QUEST_PRINT("%s : main_item_result(%x) total_result(%d)\n",
@@ -1567,26 +1417,8 @@ static void quest_auto_trigger(char* test_name)
 		param_quest_data.quefi_remained_count = 1;
 		param_quest_data.suefi_remained_count = 1;
 		param_quest_data.ddrscan_remained_count = 0;
-		quest_sync_param_quest_data();
-
-	}else if( strncmp(test_name, "KILLNOW", 7)==0 )
-	{
-		QUEST_PRINT("%s : will kill quets.sh now\n", __func__);
-
-		argv[0] = QUEST_DEBUGGING_PRG;
-		argv[1] = "action:killnow\0";		
-		ret = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
-		QUEST_PRINT("%s : call_usermodehelper(ret=%d)\n", __func__, ret);
+		quest_sync_param_quest_data();	
 		
-	}else if( strncmp(test_name, "SYSREBOOT", 9)==0 )
-	{
-		QUEST_PRINT("%s : will reboot system now\n", __func__);
-
-		argv[0] = QUEST_DEBUGGING_PRG;
-		argv[1] = "action:sysreboot\0";		
-		ret = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
-		QUEST_PRINT("%s : call_usermodehelper(ret=%d)\n", __func__, ret);	
-				
 	}else
 	{
 		QUEST_PRINT("%s : wrong test_name\n", __func__);	
@@ -1804,8 +1636,6 @@ static int __init sec_quest_init(void)
 	INIT_DELAYED_WORK(&trigger_quest_work, delayed_quest_work_func);
 	schedule_delayed_work(&trigger_quest_work, msecs_to_jiffies(WAIT_TIME_BEFORE_TRIGGER_MSECS));	
 #endif
-
-	atomic_notifier_chain_register(&panic_notifier_list, &quest_panic_block);
 
 	return 0;
 err_create_nad_sysfs:

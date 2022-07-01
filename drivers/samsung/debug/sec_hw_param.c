@@ -168,7 +168,7 @@ static ssize_t show_last_dcvs(struct device *dev,
 {
 	ssize_t info_size = 0;
 	unsigned int reset_reason;
-	char *prefix[MAX_CLUSTER_NUM] = { "L3", "SC", "GC", "GP"};
+	char *prefix[MAX_CLUSTER_NUM] = { "L3", "SC", "GC" };
 	size_t i;
 
 	if (!phealth)
@@ -404,10 +404,8 @@ static ssize_t show_ap_health(struct device *dev,
 			phealth->daily_rr.tp);
 	default_scnprintf(buf, info_size, "\"dSP\":\"%d\",",
 			phealth->daily_rr.sp);
-	default_scnprintf(buf, info_size, "\"dPP\":\"%d\",",
+	default_scnprintf(buf, info_size, "\"dPP\":\"%d\"",
 			phealth->daily_rr.pp);
-	default_scnprintf(buf, info_size, "\"dCP\":\"%d\"",
-			phealth->daily_rr.cp);
 
 	check_format(buf, &info_size, DEFAULT_LEN_STR);
 
@@ -473,31 +471,6 @@ static DEVICE_ATTR(ddr_info, 0440, show_ddr_info, NULL);
 #define PARAM0_IVALID			1
 #define PARAM0_LESS_THAN_0		2
 
-#if defined(CONFIG_SEC_NOEYEINFO)
-static ssize_t eye_rd_info_show(struct device *dev,
-                struct device_attribute *attr, char *buf)
-{
-        ssize_t info_size = 0;
-
-        default_scnprintf(buf, info_size, "\"DDRV\":\"%s\",",
-                        get_ddr_vendor_name());
-        default_scnprintf(buf, info_size, "\"DSF\":\"%d.%d\",",
-                        (get_ddr_DSF_version() >> 16) & 0xFFFF,
-                        get_ddr_DSF_version() & 0xFFFF);
-
-        default_scnprintf(buf, info_size, "\"REV1\":\"%02x\",", get_ddr_revision_id_1());
-        default_scnprintf(buf, info_size, "\"REV2\":\"%02x\",", get_ddr_revision_id_2());
-        default_scnprintf(buf, info_size, "\"SIZE\":\"%02x\",", get_ddr_total_density());
-
-        /* remove the last ',' character */
-        info_size--;
-
-        check_format(buf, &info_size, DEFAULT_LEN_STR);
-
-        return info_size;
-}
-static DEVICE_ATTR(eye_rd_info, 0440, eye_rd_info_show, NULL);
-#else
 static ssize_t eye_rd_info_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -641,7 +614,6 @@ static ssize_t eye_wr2_info_show(struct device *dev,
 	return info_size;
 }
 static DEVICE_ATTR(eye_wr2_info, 0440, eye_wr2_info_show, NULL);
-#endif
 
 static int get_param0(const char *name)
 {
@@ -1204,11 +1176,9 @@ static struct attribute *sec_hw_param_attributes[] = {
 	&dev_attr_ap_info.attr,
 	&dev_attr_ddr_info.attr,
 	&dev_attr_eye_rd_info.attr,
-#if !defined(CONFIG_SEC_NOEYEINFO)
 	&dev_attr_eye_wr1_info.attr,
 	&dev_attr_eye_wr2_info.attr,
 	&dev_attr_eye_dcc_info.attr,
-#endif
 	&dev_attr_ap_health.attr,
 	&dev_attr_last_dcvs.attr,
 	&dev_attr_extra_info.attr,
@@ -1243,6 +1213,9 @@ static int sec_errp_extra_show(struct seq_file *m, void *v)
 	if (!__is_valid_reset_reason(reset_reason))
 		goto out;
 
+	if (reset_reason == USER_UPLOAD_CAUSE_SMPL)
+		goto out;
+
 	p_rst_exinfo = kmalloc(sizeof(rst_exinfo_t), GFP_KERNEL);
 	if (!p_rst_exinfo)
 		goto out;
@@ -1256,14 +1229,6 @@ static int sec_errp_extra_show(struct seq_file *m, void *v)
 
 	offset += scnprintf((char*)(buf + offset), EXTEND_RR_SIZE - offset,
 			"RWC:%d", sec_debug_get_reset_write_cnt());
-
-	if (reset_reason == USER_UPLOAD_CAUSE_SMPL) {
-		if (strstr(p_kinfo->panic_buf, "SMPL")) {
-			offset += scnprintf((char*)(buf + offset), EXTEND_RR_SIZE - offset,
-				" PANIC:%s", p_kinfo->panic_buf);
-		}
-		goto out;
-	}
 
 	sec_debug_upload_cause_str(p_kinfo->upload_cause,
 			upload_cause_str, sizeof(upload_cause_str));

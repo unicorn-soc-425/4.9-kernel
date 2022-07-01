@@ -39,20 +39,6 @@ config SEC_QUEST_HLOS_DUMMY_MAIN_CAL
 	depends on SEC_FACTORY
 	help
 	  Samsung QUEST MAIN/CAL CONCEPT Feature (do not quest.sh)
-
-config SEC_QUEST_MAIN_HLOS_SUPPORT_FUSION
-	bool "Samsung MAIN QUEST support FUSION"
-	default n
-	depends on SEC_FACTORY
-	help
-	  Samsung MAIN QUEST support FUSION
-
-config SEC_QUEST_CAL_HLOS_SUPPORT_FUSION
-	bool "Samsung CAL QUEST support FUSION"
-	default n
-	depends on SEC_FACTORY
-	help
-	  Samsung CAL QUEST support FUSION	  
 	  
 config SEC_QUEST_AUTO_TRIGGER_KWORKER
 	bool "Samsung QUEST AUTO TRIGGER CONCEPT Feature (using kworker)"

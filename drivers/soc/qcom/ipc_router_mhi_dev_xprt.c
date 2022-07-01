@@ -1,4 +1,4 @@
-/* Copyright (c) 2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -19,7 +19,8 @@
 #include <linux/types.h>
 
 static int ipc_router_mhi_dev_xprt_debug_mask;
-module_param_named(debug_mask, ipc_router_mhi_dev_xprt_debug_mask, int, 0664);
+module_param_named(debug_mask, ipc_router_mhi_dev_xprt_debug_mask,
+		   int, S_IRUGO | S_IWUSR | S_IWGRP);
 
 #define D(x...) do { \
 if (ipc_router_mhi_dev_xprt_debug_mask) \
@@ -29,7 +30,7 @@ if (ipc_router_mhi_dev_xprt_debug_mask) \
 #define MODULE_NAME "ipc_router_mhi_dev_xprt"
 #define XPRT_NAME_LEN 32
 #define IPC_ROUTER_MHI_XPRT_MAX_PKT_SIZE 8192
-#define MHI_IPCR_ASYNC_TIMEOUT msecs_to_jiffies(100)
+#define MHI_IPCR_ASYNC_TIMEOUT msecs_to_jiffies(1000)
 #define MAX_IPCR_WR_REQ 128
 
 /**
@@ -80,8 +81,8 @@ struct ipc_router_mhi_dev_xprt {
 	struct workqueue_struct *wq;
 	struct work_struct read_work;
 	wait_queue_head_t write_wait_q;
-	unsigned int xprt_version;
-	unsigned int xprt_option;
+	unsigned xprt_version;
+	unsigned xprt_option;
 	spinlock_t wr_req_lock;
 	struct mhi_req *wreqs;
 	struct list_head wr_req_list;
@@ -119,13 +120,13 @@ static void ipc_router_mhi_dev_release_pkt(struct kref *ref)
 }
 
 /**
- * ipc_router_mhi_dev_set_xprt_version() - Set the IPC Router version
- * @xprt: Reference to the transport structure.
- * @version: The version to be set in transport.
- */
+* ipc_router_mhi_dev_set_xprt_version() - Set the IPC Router version in transport
+* @xprt:      Reference to the transport structure.
+* @version:   The version to be set in transport.
+*/
 static void ipc_router_mhi_dev_set_xprt_version(
 	struct msm_ipc_router_xprt *xprt,
-	unsigned int version)
+	unsigned version)
 {
 	struct ipc_router_mhi_dev_xprt *mhi_xprtp;
 
@@ -485,7 +486,7 @@ static int ipc_router_mhi_dev_driver_register(
 	if (rc) {
 		IPC_RTR_ERR("%s Failed to open chan 0x%x, rc %d\n",
 			__func__, mhi_xprtp->ch_hndl.in_chan_id, rc);
-		goto close_out_chan;
+		goto exit;
 	}
 	mutex_lock(&mhi_xprtp->ch_hndl.state_lock);
 	mhi_xprtp->ch_hndl.in_chan_enabled = true;
@@ -493,7 +494,7 @@ static int ipc_router_mhi_dev_driver_register(
 
 	rc = mhi_dev_xprt_alloc_write_reqs(mhi_xprtp);
 	if (rc)
-		goto close_in_chan;
+		goto exit;
 
 	/* Register the XPRT before receiving any data */
 	msm_ipc_router_xprt_notify(&mhi_xprtp->xprt,
@@ -501,12 +502,6 @@ static int ipc_router_mhi_dev_driver_register(
 	D("%s: Notified IPC Router of %s OPEN\n",
 	  __func__, mhi_xprtp->xprt.name);
 
-	return 0;
-
-close_in_chan:
-	mhi_dev_close_channel(mhi_xprtp->ch_hndl.in_handle);
-close_out_chan:
-	mhi_dev_close_channel(mhi_xprtp->ch_hndl.out_handle);
 exit:
 	return rc;
 }
@@ -552,8 +547,7 @@ static int ipc_router_mhi_dev_config_init(
 	if (IS_ERR_OR_NULL(mhi_xprtp)) {
 		IPC_RTR_ERR("%s: devm_kzalloc() failed for mhi_xprtp:%s\n",
 			__func__, mhi_xprt_config->xprt_name);
-		rc = -ENOMEM;
-		goto exit;
+		return -ENOMEM;
 	}
 
 	scnprintf(wq_name, XPRT_NAME_LEN, "MHI_DEV_XPRT%x:%x",
@@ -562,8 +556,8 @@ static int ipc_router_mhi_dev_config_init(
 	if (!mhi_xprtp->wq) {
 		IPC_RTR_ERR("%s: %s create WQ failed\n",
 			__func__, mhi_xprt_config->xprt_name);
-		rc = -EFAULT;
-		goto free_mhi_xprtp;
+		kfree(mhi_xprtp);
+		return -EFAULT;
 	}
 
 	INIT_WORK(&mhi_xprtp->read_work, mhi_xprt_read_data);
@@ -599,25 +593,13 @@ static int ipc_router_mhi_dev_config_init(
 	/* Register callback to mhi_dev */
 	rc = mhi_register_state_cb(mhi_dev_xprt_state_cb, mhi_xprtp,
 		mhi_xprtp->ch_hndl.in_chan_id);
-	if (rc && rc != -EEXIST) {
-		IPC_RTR_ERR("%s: Failed to register MHI state cb\n", __func__);
-		goto destroy_wq;
-	} else if (rc == -EEXIST) {
+	if (rc == -EEXIST) {
 		rc = ipc_router_mhi_dev_driver_register(mhi_xprtp);
-		if (rc) {
+		if (rc)
 			IPC_RTR_ERR("%s: Failed to regiter for MHI channels\n",
 				    __func__);
-			goto destroy_wq;
-		}
 	}
 
-	return 0;
-
-destroy_wq:
-	destroy_workqueue(mhi_xprtp->wq);
-free_mhi_xprtp:
-	kfree(mhi_xprtp);
-exit:
 	return rc;
 }
 
@@ -714,7 +696,7 @@ static int ipc_router_mhi_dev_xprt_probe(struct platform_device *pdev)
 	return rc;
 }
 
-static const struct of_device_id ipc_router_mhi_dev_xprt_match_table[] = {
+static struct of_device_id ipc_router_mhi_dev_xprt_match_table[] = {
 	{ .compatible = "qcom,ipc-router-mhi-dev-xprt" },
 	{},
 };
@@ -727,7 +709,21 @@ static struct platform_driver ipc_router_mhi_dev_xprt_driver = {
 		.of_match_table = ipc_router_mhi_dev_xprt_match_table,
 	},
 };
-module_platform_driver(ipc_router_mhi_dev_xprt_driver);
 
+static int __init ipc_router_mhi_dev_xprt_init(void)
+{
+	int rc;
+
+	rc = platform_driver_register(&ipc_router_mhi_dev_xprt_driver);
+	if (rc) {
+		IPC_RTR_ERR(
+			"%s: ipc_router_mhi_dev_xprt_driver reg. failed %d\n",
+			__func__, rc);
+		return rc;
+	}
+	return 0;
+}
+
+module_init(ipc_router_mhi_dev_xprt_init);
 MODULE_DESCRIPTION("IPC Router MHI_DEV XPRT");
 MODULE_LICENSE("GPL v2");

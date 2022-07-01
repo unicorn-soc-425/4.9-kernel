@@ -467,7 +467,7 @@ static void __init summary_init_task_info(void)
 	secdbg_apss->task.ti.struct_size = sizeof(struct thread_info);
 	SET_MEMBER_TYPE_INFO(&secdbg_apss->task.ti.flags, struct thread_info, flags);
 	SET_MEMBER_TYPE_INFO(&secdbg_apss->task.ts.cpu, struct task_struct, cpu);
-#if defined (CONFIG_CFP_ROPP) || defined(CONFIG_RKP_CFP_ROPP)
+#ifdef CONFIG_RKP_CFP_ROPP
 	SET_MEMBER_TYPE_INFO(&secdbg_apss->task.ti.rrk, struct thread_info, rrk);
 #endif
 
@@ -507,7 +507,7 @@ static void __init summary_init_task_info(void)
 #endif
 
 	secdbg_apss->task.init_task = (uint64_t)&init_task;
-#if defined (CONFIG_CFP_ROPP) || defined(CONFIG_RKP_CFP_ROPP)
+#ifdef CONFIG_RKP_CFP_ROPP
 	secdbg_apss->task.ropp.magic = 0x50504F52;
 #else
 	secdbg_apss->task.ropp.magic = 0x0;
@@ -571,17 +571,10 @@ static void summary_set_lpm_info_runqueues(void)
 #endif
 }
 
-#ifdef CONFIG_SCHED_WALT
-int __weak get_num_clusters(void)
-{
-	return num_clusters;
-}
-#endif
-
 static void __init summary_set_lpm_info_cluster(void)
 {
 #ifdef CONFIG_SCHED_WALT
-	secdbg_apss->aplpm.num_clusters = get_num_clusters();
+	secdbg_apss->aplpm.num_clusters = num_clusters;
 	secdbg_apss->aplpm.p_cluster = virt_to_phys((void *)sched_cluster);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
 	secdbg_apss->aplpm.dstate_offset = offsetof(struct sched_cluster, dstate);

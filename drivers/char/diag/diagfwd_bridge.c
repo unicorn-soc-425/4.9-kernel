@@ -208,6 +208,7 @@ int diag_remote_dev_open(int id)
 
 void diag_remote_dev_close(int id)
 {
+	return;
 }
 
 int diag_remote_dev_read_done(int id, unsigned char *buf, int len)
@@ -244,7 +245,6 @@ int diag_remote_dev_read_done(int id, unsigned char *buf, int len)
 int diag_remote_dev_write_done(int id, unsigned char *buf, int len, int ctxt)
 {
 	int err = 0;
-
 	if (id < 0 || id >= NUM_REMOTE_DEV)
 		return -EINVAL;
 
@@ -265,7 +265,7 @@ int diag_remote_dev_write_done(int id, unsigned char *buf, int len, int ctxt)
 	return err;
 }
 
-int diagfwd_bridge_init(void)
+int diagfwd_bridge_init()
 {
 	int err = 0;
 
@@ -284,7 +284,7 @@ fail:
 	return err;
 }
 
-void diagfwd_bridge_exit(void)
+void diagfwd_bridge_exit()
 {
 	#ifdef USB_QCOM_DIAG_BRIDGE
 	diag_hsic_exit();
@@ -312,7 +312,7 @@ int diagfwd_bridge_write(int id, unsigned char *buf, int len)
 	return 0;
 }
 
-uint16_t diag_get_remote_device_mask(void)
+uint16_t diag_get_remote_device_mask()
 {
 	int i;
 	uint16_t remote_dev = 0;

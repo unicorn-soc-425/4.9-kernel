@@ -83,7 +83,7 @@ static int pppolac_recv_core(struct sock *sk_udp, struct sk_buff *skb)
 
 	/* Put it back if it is a control packet. */
 	if (skb->data[sizeof(struct udphdr)] & L2TP_CONTROL_BIT)
-		return 2;
+		return opt->backlog_rcv(sk_udp, skb);
 
 	/* Skip UDP header. */
 	skb_pull(skb, sizeof(struct udphdr));
@@ -190,10 +190,9 @@ drop:
 
 static int pppolac_recv(struct sock *sk_udp, struct sk_buff *skb)
 {
-	int retval;
 	sock_hold(sk_udp);
-	retval =  sk_receive_skb(sk_udp, skb, 0);
-	return (retval >> 1);
+	sk_receive_skb(sk_udp, skb, 0);
+	return 0;
 }
 
 static struct sk_buff_head delivery_queue;
@@ -208,12 +207,11 @@ static void pppolac_xmit_core(struct work_struct *delivery_work)
 		struct sock *sk_udp = skb->sk;
 		struct kvec iov = {.iov_base = skb->data, .iov_len = skb->len};
 		struct msghdr msg = {
+			.msg_iov = (struct iovec *)&iov,
+			.msg_iovlen = 1,
 			.msg_flags = MSG_NOSIGNAL | MSG_DONTWAIT,
 		};
-
-		iov_iter_kvec(&msg.msg_iter, WRITE | ITER_KVEC, &iov, 1,
-			      skb->len);
-		sk_udp->sk_prot->sendmsg(sk_udp, &msg, skb->len);
+		sk_udp->sk_prot->sendmsg(NULL, sk_udp, &msg, skb->len);
 		kfree_skb(skb);
 	}
 	set_fs(old_fs);
@@ -398,11 +396,11 @@ static struct proto_ops pppolac_proto_ops = {
 	.mmap = sock_no_mmap,
 };
 
-static int pppolac_create(struct net *net, struct socket *sock, int kern)
+static int pppolac_create(struct net *net, struct socket *sock)
 {
 	struct sock *sk;
 
-	sk = sk_alloc(net, PF_PPPOX, GFP_KERNEL, &pppolac_proto, kern);
+	sk = sk_alloc(net, PF_PPPOX, GFP_KERNEL, &pppolac_proto);
 	if (!sk)
 		return -ENOMEM;
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -28,7 +28,6 @@ struct sde_hw_rotator_context;
 #define SDE_ROT_FLAG_SOURCE_ROTATED_90      0x8
 #define SDE_ROT_FLAG_ROT_90                 0x10
 #define SDE_ROT_FLAG_DEINTERLACE            0x20
-#define SDE_ROT_FLAG_SECURE_CAMERA_SESSION  0x40
 
 /**
  * General defines
@@ -73,8 +72,6 @@ struct sde_hw_rot_sspp_cfg {
 	struct sde_mdp_data          *data;
 	u32                           img_width;
 	u32                           img_height;
-	u32                           fps;
-	u64                           bw;
 };
 
 
@@ -85,7 +82,6 @@ struct sde_hw_rot_sspp_cfg {
  *  @dest_rect: dest ROI, caller takes into account the different operations
  *              such as decimation, flip etc to program this field
  *  @addr:      destination surface address
- *  @prefill_bw: prefill bandwidth in Bps
  */
 struct sde_hw_rot_wb_cfg {
 	struct sde_mdp_format_params   *fmt;
@@ -96,9 +92,6 @@ struct sde_hw_rot_wb_cfg {
 	u32                             img_height;
 	u32                             v_downscale_factor;
 	u32                             h_downscale_factor;
-	u32                             fps;
-	u64                             bw;
-	u64                             prefill_bw;
 };
 
 
@@ -123,8 +116,6 @@ struct sde_hw_rotator_ops {
 	 * @cfg:        Rotator Fetch engine configuration parameters
 	 * @danger_lut: Danger LUT setting
 	 * @safe_lut:   Safe LUT setting
-	 * @dnsc_factor_w: Downscale factor for width
-	 * @dnsc_factor_h: Downscale factor for height
 	 * @flags:      Specific config flag, see SDE_ROT_FLAG_ for details
 	 */
 	void (*setup_rotator_fetchengine)(
@@ -133,8 +124,6 @@ struct sde_hw_rotator_ops {
 			struct sde_hw_rot_sspp_cfg     *cfg,
 			u32                             danger_lut,
 			u32                             safe_lut,
-			u32                             dnsc_factor_w,
-			u32                             dnsc_factor_h,
 			u32                             flags);
 
 	/**
@@ -202,40 +191,24 @@ struct sde_dbg_buf {
  * struct sde_hw_rotator_context : Each rotator context ties to each priority
  * queue. Max number of concurrent contexts in regdma is limited to regdma
  * ram segment size allocation. Each rotator context can be any priority. A
- * incremental timestamp is used to identify and assigned to each context.
- * @list: list of pending context
- * @sequence_id: unique sequence identifier for rotation request
- * @sbuf_mode: true if stream buffer is requested
- * @start_ctrl: start control register update value
- * @sys_cache_mode: sys cache mode register update value
- * @op_mode: rot top op mode selection
- * @last_entry: pointer to last configured entry (for debugging purposes)
+ * incrementatl timestamp is used to identify and assigne to each context.
  */
 struct sde_hw_rotator_context {
-	struct list_head list;
 	struct sde_hw_rotator *rot;
 	struct sde_rot_hw_resource *hwres;
 	enum   sde_rot_queue_prio q_id;
 	u32    session_id;
-	u32    sequence_id;
-	char __iomem *regdma_base;
-	char __iomem *regdma_wrptr;
+	u32    *regdma_base;
+	u32    *regdma_wrptr;
 	u32    timestamp;
 	struct completion rot_comp;
-	wait_queue_head_t regdma_waitq;
+	struct completion regdma_comp;
 	struct sde_dbg_buf src_dbgbuf;
 	struct sde_dbg_buf dst_dbgbuf;
 	u32    last_regdma_isr_status;
 	u32    last_regdma_timestamp;
 	dma_addr_t ts_addr;
 	bool   is_secure;
-	bool   is_traffic_shaping;
-	bool   sbuf_mode;
-	bool   abort;
-	u32    start_ctrl;
-	u32    sys_cache_mode;
-	u32    op_mode;
-	struct sde_rot_entry *last_entry;
 };
 
 /**
@@ -251,21 +224,6 @@ struct sde_hw_rotator_resource_info {
  * struct sde_hw_rotator : Rotator description
  * @hw:           mdp register mapped offset
  * @ops:          pointer to operations possible for the rotator HW
- * @highest_bank: highest bank size of memory
- * @ubwc_malsize: ubwc minimum allowable length
- * @ubwc_swizzle: ubwc swizzle enable
- * @sbuf_headroom: stream buffer headroom in lines
- * @solid_fill: true if solid fill is requested
- * @constant_color: solid fill constant color
- * @sbuf_ctx: list of active sbuf context in FIFO order
- * @vid_trigger: video mode trigger select
- * @cmd_trigger: command mode trigger select
- * @inpixfmts: array of supported input pixel formats fourcc per mode
- * @num_inpixfmt: size of the supported input pixel format array per mode
- * @outpixfmts: array of supported output pixel formats in fourcc per mode
- * @num_outpixfmt: size of the supported output pixel formats array per mode
- * @downscale_caps: capability string of scaling
- * @maxlinewidth: maximum line width supported
  */
 struct sde_hw_rotator {
 	/* base */
@@ -281,7 +239,7 @@ struct sde_hw_rotator {
 	u32    cmd_queue[SDE_HW_ROT_REGDMA_RAM_SIZE];
 
 	/* Cmd Queue Write Ptr */
-	char __iomem *cmd_wr_ptr[ROT_QUEUE_MAX][SDE_HW_ROT_REGDMA_TOTAL_CTX];
+	u32   *cmd_wr_ptr[ROT_QUEUE_MAX][SDE_HW_ROT_REGDMA_TOTAL_CTX];
 
 	/* Rotator Context */
 	struct sde_hw_rotator_context
@@ -295,7 +253,6 @@ struct sde_hw_rotator {
 
 	/* logical interrupt number */
 	int    irq_num;
-	atomic_t irq_enabled;
 
 	/* internal ION memory for SW timestamp */
 	struct ion_client *iclient;
@@ -303,30 +260,16 @@ struct sde_hw_rotator {
 	void *swts_buffer;
 
 	u32    highest_bank;
-	u32    ubwc_malsize;
-	u32    ubwc_swizzle;
-	u32    sbuf_headroom;
-	u32    solid_fill;
-	u32    constant_color;
+	struct completion rot_comp;
+	struct completion regdma_comp;
+
+	atomic_t regdma_submit_count;
+	atomic_t regdma_done_count;
 
 	spinlock_t rotctx_lock;
 	spinlock_t rotisr_lock;
 
-	bool    dbgmem;
-	bool reset_hw_ts;
-	u32 last_hw_ts;
-	u32 koff_timeout;
-	u32 vid_trigger;
-	u32 cmd_trigger;
-
-	struct list_head sbuf_ctx[ROT_QUEUE_MAX];
-
-	const u32 *inpixfmts[SDE_ROTATOR_MODE_MAX];
-	u32 num_inpixfmt[SDE_ROTATOR_MODE_MAX];
-	const u32 *outpixfmts[SDE_ROTATOR_MODE_MAX];
-	u32 num_outpixfmt[SDE_ROTATOR_MODE_MAX];
-	const char *downscale_caps;
-	u32 maxlinewidth;
+	u32     dbgmem;
 };
 
 /**
@@ -350,7 +293,7 @@ static inline u32 sde_hw_rotator_get_regdma_ctxidx(
  * @ctx: Rotator Context
  * return: base segment address
  */
-static inline char __iomem *sde_hw_rotator_get_regdma_segment_base(
+static inline u32 *sde_hw_rotator_get_regdma_segment_base(
 		struct sde_hw_rotator_context *ctx)
 {
 	SDEROT_DBG("regdma base @slot[%d]: %p\n",
@@ -366,11 +309,11 @@ static inline char __iomem *sde_hw_rotator_get_regdma_segment_base(
  * @ctx: Rotator Context
  * return: segment address
  */
-static inline char __iomem *sde_hw_rotator_get_regdma_segment(
+static inline u32 *sde_hw_rotator_get_regdma_segment(
 		struct sde_hw_rotator_context *ctx)
 {
 	u32 idx = sde_hw_rotator_get_regdma_ctxidx(ctx);
-	char __iomem *addr = ctx->regdma_wrptr;
+	u32 *addr = ctx->regdma_wrptr;
 
 	SDEROT_DBG("regdma slot[%d] ==> %p\n", idx, addr);
 	return addr;
@@ -384,7 +327,7 @@ static inline char __iomem *sde_hw_rotator_get_regdma_segment(
  */
 static inline void sde_hw_rotator_put_regdma_segment(
 		struct sde_hw_rotator_context *ctx,
-		char __iomem *wrptr)
+		u32 *wrptr)
 {
 	u32 idx = sde_hw_rotator_get_regdma_ctxidx(ctx);
 
@@ -398,38 +341,12 @@ static inline void sde_hw_rotator_put_regdma_segment(
  */
 static inline void sde_hw_rotator_put_ctx(struct sde_hw_rotator_context *ctx)
 {
-	struct sde_hw_rotator *rot = ctx->rot;
-	u32 idx = sde_hw_rotator_get_regdma_ctxidx(ctx);
-	unsigned long flags;
+	 struct sde_hw_rotator *rot = ctx->rot;
+	 u32 idx = sde_hw_rotator_get_regdma_ctxidx(ctx);
 
-	spin_lock_irqsave(&rot->rotisr_lock, flags);
-	rot->rotCtx[ctx->q_id][idx] = ctx;
-	if (ctx->sbuf_mode)
-		list_add_tail(&ctx->list, &rot->sbuf_ctx[ctx->q_id]);
-	spin_unlock_irqrestore(&rot->rotisr_lock, flags);
-
-	SDEROT_DBG("rotCtx[%d][%d] <== ctx:%p | session-id:%d\n",
+	 rot->rotCtx[ctx->q_id][idx] = ctx;
+	 SDEROT_DBG("rotCtx[%d][%d] <== ctx:%p | session-id:%d\n",
 			 ctx->q_id, idx, ctx, ctx->session_id);
-}
-
-/**
- * sde_hw_rotator_clr_ctx(): Clearing rotator context according to its
- * timestamp.
- */
-static inline void sde_hw_rotator_clr_ctx(struct sde_hw_rotator_context *ctx)
-{
-	struct sde_hw_rotator *rot = ctx->rot;
-	u32 idx = sde_hw_rotator_get_regdma_ctxidx(ctx);
-	unsigned long flags;
-
-	spin_lock_irqsave(&rot->rotisr_lock, flags);
-	rot->rotCtx[ctx->q_id][idx] = NULL;
-	if (ctx->sbuf_mode)
-		list_del_init(&ctx->list);
-	spin_unlock_irqrestore(&rot->rotisr_lock, flags);
-
-	SDEROT_DBG("rotCtx[%d][%d] <== null | session-id:%d\n",
-			 ctx->q_id, idx, ctx->session_id);
 }
 
 #endif /*_SDE_ROTATOR_R3_INTERNAL_H */

@@ -97,46 +97,33 @@ static int diag_apps_responds(void)
 
 static void diag_send_log_mask_update(uint8_t peripheral, int equip_id)
 {
-	int err = 0, send_once = 0, i;
+	int i;
+	int err = 0;
+	int send_once = 0;
 	int header_len = sizeof(struct diag_ctrl_log_mask);
-	uint8_t *buf = NULL, *temp = NULL;
-	uint8_t upd = 0;
-	uint32_t mask_size = 0, pd_mask = 0;
+	uint8_t *buf = NULL;
+	uint8_t *temp = NULL;
+	uint32_t mask_size = 0;
 	struct diag_ctrl_log_mask ctrl_pkt;
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_log_mask_t *mask = NULL;
-	struct diagfwd_info *fwd_info = NULL;
 
 	if (peripheral >= NUM_PERIPHERALS)
 		return;
 
 	if (!driver->diagfwd_cntl[peripheral] ||
 	    !driver->diagfwd_cntl[peripheral]->ch_open) {
-		pr_debug("diag: In %s, control channel is not open, p: %d\n",
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: In %s, control channel is not open, p: %d\n",
 			 __func__, peripheral);
 		return;
 	}
 
-	MD_PERIPHERAL_PD_MASK(TYPE_CNTL, peripheral, pd_mask);
-
-	if (driver->md_session_mask != 0) {
-		if (driver->md_session_mask & MD_PERIPHERAL_MASK(peripheral)) {
-			if (driver->md_session_map[peripheral])
-				mask_info =
-				driver->md_session_map[peripheral]->log_mask;
-		} else if (driver->md_session_mask & pd_mask) {
-			upd = diag_mask_to_pd_value(driver->md_session_mask);
-			if (upd && driver->md_session_map[upd])
-				mask_info =
-				driver->md_session_map[upd]->log_mask;
-		} else {
-			DIAG_LOG(DIAG_DEBUG_MASKS,
-			"asking for mask update with unknown session mask\n");
-			return;
-		}
-	} else {
+	if (driver->md_session_mask != 0 &&
+	    driver->md_session_mask & MD_PERIPHERAL_MASK(peripheral))
+		mask_info = driver->md_session_map[peripheral]->log_mask;
+	else
 		mask_info = &log_mask;
-	}
+
 
 	if (!mask_info || !mask_info->ptr || !mask_info->update_buf)
 		return;
@@ -167,7 +154,9 @@ static void diag_send_log_mask_update(uint8_t peripheral, int equip_id)
 		return;
 	}
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
 	for (i = 0; i < MAX_EQUIP_ID; i++, mask++) {
 		if (!mask->ptr)
 			continue;
@@ -175,7 +164,10 @@ static void diag_send_log_mask_update(uint8_t peripheral, int equip_id)
 		if (equip_id != i && equip_id != ALL_EQUIP_ID)
 			continue;
 
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask->lock\n", __func__, __LINE__);
 		mutex_lock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask->lock\n", __func__, __LINE__);
+		
 		ctrl_pkt.cmd_type = DIAG_CTRL_MSG_LOG_MASK;
 		ctrl_pkt.stream_id = 1;
 		ctrl_pkt.status = mask_info->status;
@@ -191,9 +183,10 @@ static void diag_send_log_mask_update(uint8_t peripheral, int equip_id)
 			temp = krealloc(buf, header_len + mask_size,
 					GFP_KERNEL);
 			if (!temp) {
-				pr_err_ratelimited("diag: Unable to realloc log update buffer, new size: %d, equip_id: %d\n",
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: Unable to realloc log update buffer, new size: %d, equip_id: %d\n",
 				       header_len + mask_size, equip_id);
 				mutex_unlock(&mask->lock);
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 				break;
 			}
 			mask_info->update_buf = temp;
@@ -205,6 +198,7 @@ static void diag_send_log_mask_update(uint8_t peripheral, int equip_id)
 		if (mask_size > 0 && mask_size <= LOG_MASK_SIZE)
 			memcpy(buf + header_len, mask->ptr, mask_size);
 		mutex_unlock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 
 		DIAG_LOG(DIAG_DEBUG_MASKS,
 			 "sending ctrl pkt to %d, e %d num_items %d size %d\n",
@@ -214,28 +208,29 @@ static void diag_send_log_mask_update(uint8_t peripheral, int equip_id)
 		err = diagfwd_write(peripheral, TYPE_CNTL,
 				    buf, header_len + mask_size);
 		if (err && err != -ENODEV)
-			pr_err_ratelimited("diag: Unable to send log masks to peripheral %d, equip_id: %d, err: %d\n",
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: Unable to send log masks to peripheral %d, equip_id: %d, err: %d\n",
 			       peripheral, i, err);
 		if (send_once || equip_id != ALL_EQUIP_ID)
 			break;
 
 	}
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 }
 
 static void diag_send_event_mask_update(uint8_t peripheral)
 {
-	uint8_t *buf = NULL, *temp = NULL;
-	uint8_t upd = 0;
-	uint32_t pd_mask = 0;
-	int num_bytes = EVENT_COUNT_TO_BYTES(driver->last_event_id);
-	int write_len = 0, err = 0, i = 0, temp_len = 0;
+	uint8_t *buf = NULL;
+	uint8_t *temp = NULL;
 	struct diag_ctrl_event_mask header;
 	struct diag_mask_info *mask_info = NULL;
-	struct diagfwd_info *fwd_info = NULL;
+	int num_bytes = EVENT_COUNT_TO_BYTES(driver->last_event_id);
+	int write_len = 0;
+	int err = 0;
+	int temp_len = 0;
 
 	if (num_bytes <= 0 || num_bytes > driver->event_mask_size) {
-		pr_debug("diag: In %s, invalid event mask length %d\n",
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: In %s, invalid event mask length %d\n",
 			 __func__, num_bytes);
 		return;
 	}
@@ -245,37 +240,25 @@ static void diag_send_event_mask_update(uint8_t peripheral)
 
 	if (!driver->diagfwd_cntl[peripheral] ||
 	    !driver->diagfwd_cntl[peripheral]->ch_open) {
-		pr_debug("diag: In %s, control channel is not open, p: %d\n",
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: In %s, control channel is not open, p: %d\n",
 			 __func__, peripheral);
 		return;
 	}
 
-	MD_PERIPHERAL_PD_MASK(TYPE_CNTL, peripheral, pd_mask);
-
-	if (driver->md_session_mask != 0) {
-		if (driver->md_session_mask & MD_PERIPHERAL_MASK(peripheral)) {
-			if (driver->md_session_map[peripheral])
-				mask_info =
-				driver->md_session_map[peripheral]->event_mask;
-		} else if (driver->md_session_mask & pd_mask) {
-			upd = diag_mask_to_pd_value(driver->md_session_mask);
-			if (upd && driver->md_session_map[upd])
-				mask_info =
-				driver->md_session_map[upd]->event_mask;
-		} else {
-			DIAG_LOG(DIAG_DEBUG_MASKS,
-			"asking for mask update with unknown session mask\n");
-			return;
-		}
-	} else {
+	if (driver->md_session_mask != 0 &&
+	    (driver->md_session_mask & MD_PERIPHERAL_MASK(peripheral)))
+		mask_info = driver->md_session_map[peripheral]->event_mask;
+	else
 		mask_info = &event_mask;
-	}
+
 
 	if (!mask_info || !mask_info->ptr || !mask_info->update_buf)
 		return;
 
 	buf = mask_info->update_buf;
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
 	header.cmd_type = DIAG_CTRL_MSG_EVENT_MASK;
 	header.stream_id = 1;
 	header.status = mask_info->status;
@@ -296,7 +279,7 @@ static void diag_send_event_mask_update(uint8_t peripheral)
 			temp_len = num_bytes + sizeof(header);
 			temp = krealloc(buf, temp_len, GFP_KERNEL);
 			if (!temp) {
-				pr_err("diag: Unable to realloc event mask update buffer\n");
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: Unable to realloc event mask update buffer\n");
 				goto err;
 			} else {
 				mask_info->update_buf = temp;
@@ -314,7 +297,7 @@ static void diag_send_event_mask_update(uint8_t peripheral)
 		write_len += num_bytes;
 		break;
 	default:
-		pr_debug("diag: In %s, invalid status %d\n", __func__,
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: In %s, invalid status %d\n", __func__,
 			 mask_info->status);
 		goto err;
 	}
@@ -324,24 +307,26 @@ static void diag_send_event_mask_update(uint8_t peripheral)
 
 	err = diagfwd_write(peripheral, TYPE_CNTL, buf, write_len);
 	if (err && err != -ENODEV)
-		pr_err_ratelimited("diag: Unable to send event masks to peripheral %d\n",
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: Unable to send event masks to peripheral %d\n",
 		       peripheral);
 err:
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 }
 
 static void diag_send_msg_mask_update(uint8_t peripheral, int first, int last)
 {
-	int i, err = 0, temp_len = 0;
+	int i;
+	int err = 0;
 	int header_len = sizeof(struct diag_ctrl_msg_mask);
-	uint8_t *buf = NULL, *temp = NULL;
-	uint8_t upd = 0;
+	int temp_len = 0;
+	uint8_t *buf = NULL;
+	uint8_t *temp = NULL;
 	uint8_t msg_mask_tbl_count_local = 0;
-	uint32_t mask_size = 0, pd_mask = 0;
+	uint32_t mask_size = 0;
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_msg_mask_t *mask = NULL;
 	struct diag_ctrl_msg_mask header;
-	struct diagfwd_info *fwd_info = NULL;
 	struct diag_md_session_t *md_session_info = NULL;
 
 	if (peripheral >= NUM_PERIPHERALS)
@@ -354,38 +339,23 @@ static void diag_send_msg_mask_update(uint8_t peripheral, int first, int last)
 		return;
 	}
 
-	MD_PERIPHERAL_PD_MASK(TYPE_CNTL, peripheral, pd_mask);
-
-	if (driver->md_session_mask != 0) {
-		if (driver->md_session_mask & MD_PERIPHERAL_MASK(peripheral)) {
-			if (driver->md_session_map[peripheral]) {
-				mask_info =
-				driver->md_session_map[peripheral]->msg_mask;
-				md_session_info =
-					driver->md_session_map[peripheral];
-			}
-		} else if (driver->md_session_mask & pd_mask) {
-			upd = diag_mask_to_pd_value(driver->md_session_mask);
-			if (upd && driver->md_session_map[upd]) {
-				mask_info =
-				driver->md_session_map[upd]->msg_mask;
-				md_session_info = driver->md_session_map[upd];
-			}
-		} else {
-			DIAG_LOG(DIAG_DEBUG_MASKS,
-			"asking for mask update with unknown session mask\n");
-			return;
-		}
-	} else {
+	if ((driver->md_session_mask != 0) &&
+		(driver->md_session_mask & MD_PERIPHERAL_MASK(peripheral))) {
+		md_session_info = driver->md_session_map[peripheral];
+		mask_info = driver->md_session_map[peripheral]->msg_mask;
+	} else
 		mask_info = &msg_mask;
-	}
+
 
 	if (!mask_info || !mask_info->ptr || !mask_info->update_buf)
 		return;
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	mask = (struct diag_msg_mask_t *)mask_info->ptr;
 	if (!mask->ptr) {
 		mutex_unlock(&driver->msg_mask_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 		return;
 	}
 	buf = mask_info->update_buf;
@@ -394,7 +364,10 @@ static void diag_send_msg_mask_update(uint8_t peripheral, int first, int last)
 	else
 		msg_mask_tbl_count_local = driver->msg_mask_tbl_count;
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
 	switch (mask_info->status) {
 	case DIAG_CTRL_MASK_ALL_DISABLED:
 		mask_size = 0;
@@ -405,7 +378,7 @@ static void diag_send_msg_mask_update(uint8_t peripheral, int first, int last)
 	case DIAG_CTRL_MASK_VALID:
 		break;
 	default:
-		pr_debug("diag: In %s, invalid status: %d\n", __func__,
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: In %s, invalid status: %d\n", __func__,
 			 mask_info->status);
 		goto err;
 	}
@@ -413,14 +386,19 @@ static void diag_send_msg_mask_update(uint8_t peripheral, int first, int last)
 	for (i = 0; i < msg_mask_tbl_count_local; i++, mask++) {
 		if (!mask->ptr)
 			continue;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 		mutex_lock(&driver->msg_mask_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 		if (((mask->ssid_first > first) ||
 			(mask->ssid_last_tools < last)) && first != ALL_SSID) {
 			mutex_unlock(&driver->msg_mask_lock);
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 			continue;
 		}
 
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask->lock\n", __func__, __LINE__);
 		mutex_lock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask->lock\n", __func__, __LINE__);
 		if (mask_info->status == DIAG_CTRL_MASK_VALID) {
 			mask_size =
 				mask->ssid_last_tools - mask->ssid_first + 1;
@@ -430,7 +408,7 @@ static void diag_send_msg_mask_update(uint8_t peripheral, int first, int last)
 			temp = krealloc(mask_info->update_buf, temp_len,
 					GFP_KERNEL);
 			if (!temp) {
-				pr_err("diag: In %s, unable to realloc msg_mask update buffer\n",
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: In %s, unable to realloc msg_mask update buffer\n",
 				       __func__);
 				mask_size = (mask_info->update_buf_len -
 					    header_len) / sizeof(uint32_t);
@@ -438,7 +416,7 @@ static void diag_send_msg_mask_update(uint8_t peripheral, int first, int last)
 				mask_info->update_buf = temp;
 				mask_info->update_buf_len = temp_len;
 				buf = temp;
-				pr_debug("diag: In %s, successfully reallocated msg_mask update buffer to len: %d\n",
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag: In %s, successfully reallocated msg_mask update buffer to len: %d\n",
 					 __func__, mask_info->update_buf_len);
 			}
 		} else if (mask_info->status == DIAG_CTRL_MASK_ALL_ENABLED) {
@@ -458,7 +436,9 @@ proceed:
 		if (mask_size > 0)
 			memcpy(buf + header_len, mask->ptr, mask_size);
 		mutex_unlock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 		mutex_unlock(&driver->msg_mask_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 
 		err = diagfwd_write(peripheral, TYPE_CNTL, buf,
 				    header_len + mask_size);
@@ -471,6 +451,7 @@ proceed:
 	}
 err:
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 }
 
 static void diag_send_time_sync_update(uint8_t peripheral)
@@ -537,19 +518,10 @@ static void diag_send_feature_mask_update(uint8_t peripheral)
 	DIAG_SET_FEATURE_MASK(F_DIAG_FEATURE_MASK_SUPPORT);
 	DIAG_SET_FEATURE_MASK(F_DIAG_LOG_ON_DEMAND_APPS);
 	DIAG_SET_FEATURE_MASK(F_DIAG_STM);
-	DIAG_SET_FEATURE_MASK(F_DIAG_DCI_EXTENDED_HEADER_SUPPORT);
-	DIAG_SET_FEATURE_MASK(F_DIAG_DIAGID_SUPPORT);
 	if (driver->supports_separate_cmdrsp)
 		DIAG_SET_FEATURE_MASK(F_DIAG_REQ_RSP_SUPPORT);
 	if (driver->supports_apps_hdlc_encoding)
 		DIAG_SET_FEATURE_MASK(F_DIAG_APPS_HDLC_ENCODE);
-	if (driver->supports_apps_header_untagging) {
-		if (driver->feature[peripheral].untag_header) {
-			DIAG_SET_FEATURE_MASK(F_DIAG_PKT_HEADER_UNTAG);
-			driver->peripheral_untag[peripheral] =
-				ENABLE_PKT_HEADER_UNTAGGING;
-		}
-	}
 	DIAG_SET_FEATURE_MASK(F_DIAG_MASK_CENTRALIZATION);
 	if (driver->supports_sockets)
 		DIAG_SET_FEATURE_MASK(F_DIAG_SOCKETS_ENABLED);
@@ -581,7 +553,9 @@ static int diag_cmd_get_ssid_range(unsigned char *src_buf, int src_len,
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_md_session_t *info = NULL;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
 	info = diag_md_session_get_pid(pid);
 	mask_info = (!info) ? &msg_mask : info->msg_mask;
 	if (!src_buf || !dest_buf || src_len <= 0 || dest_len <= 0 ||
@@ -590,20 +564,26 @@ static int diag_cmd_get_ssid_range(unsigned char *src_buf, int src_len,
 		       __func__, src_buf, src_len, dest_buf, dest_len,
 		       mask_info);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
+	
 	if (!mask_info->ptr) {
 		pr_err("diag: In %s, invalid input mask_info->ptr: %pK\n",
 			__func__, mask_info->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 
 	if (!diag_apps_responds()) {
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return 0;
 	}
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	msg_mask_tbl_count = (info) ? info->msg_mask_tbl_count :
 		driver->msg_mask_tbl_count;
 	rsp.cmd_code = DIAG_CMD_MSG_CONFIG;
@@ -626,7 +606,9 @@ static int diag_cmd_get_ssid_range(unsigned char *src_buf, int src_len,
 		write_len += sizeof(ssid_range);
 	}
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	return write_len;
 }
 
@@ -650,7 +632,9 @@ static int diag_cmd_get_build_mask(unsigned char *src_buf, int src_len,
 
 	if (!diag_apps_responds())
 		return 0;
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	req = (struct diag_build_mask_req_t *)src_buf;
 	rsp.cmd_code = DIAG_CMD_MSG_CONFIG;
 	rsp.sub_cmd = DIAG_CMD_OP_GET_BUILD_MASK;
@@ -683,6 +667,7 @@ static int diag_cmd_get_build_mask(unsigned char *src_buf, int src_len,
 	memcpy(dest_buf, &rsp, sizeof(rsp));
 	write_len += sizeof(rsp);
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	return write_len;
 }
 
@@ -699,7 +684,9 @@ static int diag_cmd_get_msg_mask(unsigned char *src_buf, int src_len,
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_md_session_t *info = NULL;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
 	info = diag_md_session_get_pid(pid);
 
 	mask_info = (!info) ? &msg_mask : info->msg_mask;
@@ -709,20 +696,26 @@ static int diag_cmd_get_msg_mask(unsigned char *src_buf, int src_len,
 		       __func__, src_buf, src_len, dest_buf, dest_len,
 		       mask_info);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
+	
 	if (!mask_info->ptr) {
 		pr_err("diag: In %s, invalid input mask_info->ptr: %pK\n",
 			__func__, mask_info->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	if (!diag_apps_responds()) {
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return 0;
 	}
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	msg_mask_tbl_count = (info) ? info->msg_mask_tbl_count :
 			driver->msg_mask_tbl_count;
 	req = (struct diag_build_mask_req_t *)src_buf;
@@ -737,7 +730,9 @@ static int diag_cmd_get_msg_mask(unsigned char *src_buf, int src_len,
 		pr_err("diag: Invalid input in %s, mask->ptr: %pK\n",
 			__func__, mask->ptr);
 		mutex_unlock(&driver->msg_mask_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	for (i = 0; i < msg_mask_tbl_count; i++, mask++) {
@@ -759,26 +754,33 @@ static int diag_cmd_get_msg_mask(unsigned char *src_buf, int src_len,
 	memcpy(dest_buf, &rsp, sizeof(rsp));
 	write_len += sizeof(rsp);
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	return write_len;
 }
 
 static int diag_cmd_set_msg_mask(unsigned char *src_buf, int src_len,
 			unsigned char *dest_buf, int dest_len, int pid)
 {
-	uint32_t mask_size = 0, offset = 0;
-	uint32_t *temp = NULL;
-	int write_len = 0, i = 0, found = 0, peripheral;
+	int i;
+	int write_len = 0;
 	int header_len = sizeof(struct diag_msg_build_mask_t);
+	int found = 0;
+	uint32_t mask_size = 0;
+	uint32_t offset = 0;
 	struct diag_msg_mask_t *mask = NULL;
 	struct diag_msg_build_mask_t *req = NULL;
 	struct diag_msg_build_mask_t rsp;
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_msg_mask_t *mask_next = NULL;
+	uint32_t *temp = NULL;
 	struct diag_md_session_t *info = NULL;
 	uint8_t msg_mask_tbl_count = 0;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
 	info = diag_md_session_get_pid(pid);
 
 	mask_info = (!info) ? &msg_mask : info->msg_mask;
@@ -788,25 +790,35 @@ static int diag_cmd_set_msg_mask(unsigned char *src_buf, int src_len,
 		       __func__, src_buf, src_len, dest_buf, dest_len,
 		       mask_info);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
+	
 	if (!mask_info->ptr) {
 		pr_err("diag: In %s, invalid input mask_info->ptr: %pK\n",
 			__func__, mask_info->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 
 	req = (struct diag_msg_build_mask_t *)src_buf;
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	mask = (struct diag_msg_mask_t *)mask_info->ptr;
 	if (!mask->ptr) {
 		pr_err("diag: Invalid input in %s, mask->ptr: %pK\n",
 			__func__, mask->ptr);
 		mutex_unlock(&driver->msg_mask_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 		mutex_unlock(&mask_info->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	msg_mask_tbl_count = (info) ? info->msg_mask_tbl_count :
@@ -827,7 +839,9 @@ static int diag_cmd_set_msg_mask(unsigned char *src_buf, int src_len,
 		}
 		mask_next = NULL;
 		found = 1;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask->lock\n", __func__, __LINE__);
 		mutex_lock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask->lock\n", __func__, __LINE__);
 		mask_size = req->ssid_last - req->ssid_first + 1;
 		if (mask_size > MAX_SSID_PER_RANGE) {
 			pr_warn("diag: In %s, truncating ssid range, %d-%d to max allowed: %d\n",
@@ -851,9 +865,13 @@ static int diag_cmd_set_msg_mask(unsigned char *src_buf, int src_len,
 				pr_err_ratelimited("diag: In %s, unable to allocate memory for msg mask ptr, mask_size: %d\n",
 						   __func__, mask_size);
 				mutex_unlock(&mask->lock);
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 				mutex_unlock(&driver->msg_mask_lock);
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 				mutex_unlock(&mask_info->lock);
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 				mutex_unlock(&driver->md_session_lock);
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 				return -ENOMEM;
 			}
 			mask->ptr = temp;
@@ -864,6 +882,7 @@ static int diag_cmd_set_msg_mask(unsigned char *src_buf, int src_len,
 			pr_err("diag: In %s, Not in msg mask range, mask_size: %d, offset: %d\n",
 			       __func__, mask_size, offset);
 			mutex_unlock(&mask->lock);
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 			break;
 		}
 		mask_size = mask_size * sizeof(uint32_t);
@@ -871,12 +890,16 @@ static int diag_cmd_set_msg_mask(unsigned char *src_buf, int src_len,
 			memcpy(mask->ptr + offset, src_buf + header_len,
 				mask_size);
 		mutex_unlock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 		mask_info->status = DIAG_CTRL_MASK_VALID;
 		break;
 	}
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	if (diag_check_update(APPS_DATA, pid))
 		diag_update_userspace_clients(MSG_MASKS_TYPE);
 
@@ -899,19 +922,15 @@ static int diag_cmd_set_msg_mask(unsigned char *src_buf, int src_len,
 	if (mask_size && src_len >= header_len + mask_size)
 		memcpy(dest_buf + write_len, src_buf + header_len, mask_size);
 	write_len += mask_size;
-	for (i = 0; i < NUM_MD_SESSIONS; i++) {
-		if (i == APPS_DATA)
-			continue;
+	for (i = 0; i < NUM_PERIPHERALS; i++) {
 		if (!diag_check_update(i, pid))
 			continue;
-		if (i > NUM_PERIPHERALS)
-			peripheral = diag_search_peripheral_by_pd(i);
-		else
-			peripheral = i;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 		mutex_lock(&driver->md_session_lock);
-		diag_send_msg_mask_update(peripheral, req->ssid_first,
-			req->ssid_last);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
+		diag_send_msg_mask_update(i, req->ssid_first, req->ssid_last);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	}
 end:
 	return write_len;
@@ -920,7 +939,8 @@ end:
 static int diag_cmd_set_all_msg_mask(unsigned char *src_buf, int src_len,
 			unsigned char *dest_buf, int dest_len, int pid)
 {
-	int i, write_len = 0, peripheral;
+	int i;
+	int write_len = 0;
 	int header_len = sizeof(struct diag_msg_config_rsp_t);
 	struct diag_msg_config_rsp_t rsp;
 	struct diag_msg_config_rsp_t *req = NULL;
@@ -929,7 +949,9 @@ static int diag_cmd_set_all_msg_mask(unsigned char *src_buf, int src_len,
 	struct diag_md_session_t *info = NULL;
 	uint8_t msg_mask_tbl_count = 0;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
 	info = diag_md_session_get_pid(pid);
 
 	mask_info = (!info) ? &msg_mask : info->msg_mask;
@@ -939,27 +961,36 @@ static int diag_cmd_set_all_msg_mask(unsigned char *src_buf, int src_len,
 		       __func__, src_buf, src_len, dest_buf, dest_len,
 		       mask_info);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	if (!mask_info->ptr) {
 		pr_err("diag: In %s, invalid input mask_info->ptr: %pK\n",
 			__func__, mask_info->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 
 	req = (struct diag_msg_config_rsp_t *)src_buf;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 
 	mask = (struct diag_msg_mask_t *)mask_info->ptr;
 	if (!mask->ptr) {
 		pr_err("diag: Invalid input in %s, mask->ptr: %pK\n",
 			__func__, mask->ptr);
 		mutex_unlock(&driver->msg_mask_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 		mutex_unlock(&mask_info->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	msg_mask_tbl_count = (info) ? info->msg_mask_tbl_count :
@@ -968,15 +999,21 @@ static int diag_cmd_set_all_msg_mask(unsigned char *src_buf, int src_len,
 					   DIAG_CTRL_MASK_ALL_DISABLED;
 	for (i = 0; i < msg_mask_tbl_count; i++, mask++) {
 		if (mask && mask->ptr) {
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask->lock\n", __func__, __LINE__);
 			mutex_lock(&mask->lock);
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask->lock\n", __func__, __LINE__);
 			memset(mask->ptr, req->rt_mask,
-			       mask->range * sizeof(uint32_t));
+		    	   mask->range * sizeof(uint32_t));
 			mutex_unlock(&mask->lock);
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 		}
 	}
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	if (diag_check_update(APPS_DATA, pid))
 		diag_update_userspace_clients(MSG_MASKS_TYPE);
 
@@ -992,18 +1029,15 @@ static int diag_cmd_set_all_msg_mask(unsigned char *src_buf, int src_len,
 	memcpy(dest_buf, &rsp, header_len);
 	write_len += header_len;
 
-	for (i = 0; i < NUM_MD_SESSIONS; i++) {
-		if (i == APPS_DATA)
-			continue;
+	for (i = 0; i < NUM_PERIPHERALS; i++) {
 		if (!diag_check_update(i, pid))
 			continue;
-		if (i > NUM_PERIPHERALS)
-			peripheral = diag_search_peripheral_by_pd(i);
-		else
-			peripheral = i;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 		mutex_lock(&driver->md_session_lock);
-		diag_send_msg_mask_update(peripheral, ALL_SSID, ALL_SSID);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
+		diag_send_msg_mask_update(i, ALL_SSID, ALL_SSID);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	}
 
 	return write_len;
@@ -1047,14 +1081,18 @@ static int diag_cmd_get_event_mask(unsigned char *src_buf, int src_len,
 static int diag_cmd_update_event_mask(unsigned char *src_buf, int src_len,
 			unsigned char *dest_buf, int dest_len, int pid)
 {
-	int i, write_len = 0, mask_len = 0, peripheral;
+	int i;
+	int write_len = 0;
+	int mask_len = 0;
 	int header_len = sizeof(struct diag_event_mask_config_t);
 	struct diag_event_mask_config_t rsp;
 	struct diag_event_mask_config_t *req;
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_md_session_t *info = NULL;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
 	info = diag_md_session_get_pid(pid);
 	mask_info = (!info) ? &event_mask : info->event_mask;
 	if (!src_buf || !dest_buf || dest_len <= 0 || !mask_info ||
@@ -1063,12 +1101,14 @@ static int diag_cmd_update_event_mask(unsigned char *src_buf, int src_len,
 		       __func__, src_buf, src_len, dest_buf, dest_len,
 		       mask_info);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	if (!mask_info->ptr) {
 		pr_err("diag: In %s, invalid input mask_info->ptr: %pK\n",
 			__func__, mask_info->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	req = (struct diag_event_mask_config_t *)src_buf;
@@ -1077,15 +1117,20 @@ static int diag_cmd_update_event_mask(unsigned char *src_buf, int src_len,
 		pr_err("diag: In %s, invalid event mask len: %d\n", __func__,
 		       mask_len);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EIO;
 	}
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
 	if (src_len >= header_len + mask_len)
-		memcpy(event_mask.ptr, src_buf + header_len, mask_len);
+		memcpy(mask_info->ptr, src_buf + header_len, mask_len);
 	mask_info->status = DIAG_CTRL_MASK_VALID;
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	if (diag_check_update(APPS_DATA, pid))
 		diag_update_userspace_clients(EVENT_MASKS_TYPE);
 
@@ -1102,18 +1147,15 @@ static int diag_cmd_update_event_mask(unsigned char *src_buf, int src_len,
 	memcpy(dest_buf + write_len, mask_info->ptr, mask_len);
 	write_len += mask_len;
 
-	for (i = 0; i < NUM_MD_SESSIONS; i++) {
-		if (i == APPS_DATA)
-			continue;
+	for (i = 0; i < NUM_PERIPHERALS; i++) {
 		if (!diag_check_update(i, pid))
 			continue;
-		if (i > NUM_PERIPHERALS)
-			peripheral = diag_search_peripheral_by_pd(i);
-		else
-			peripheral = i;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 		mutex_lock(&driver->md_session_lock);
-		diag_send_event_mask_update(peripheral);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
+		diag_send_event_mask_update(i);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	}
 
 	return write_len;
@@ -1122,13 +1164,16 @@ static int diag_cmd_update_event_mask(unsigned char *src_buf, int src_len,
 static int diag_cmd_toggle_events(unsigned char *src_buf, int src_len,
 			unsigned char *dest_buf, int dest_len, int pid)
 {
-	int write_len = 0, i, peripheral;
+	int i;
+	int write_len = 0;
 	uint8_t toggle = 0;
 	struct diag_event_report_t header;
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_md_session_t *info = NULL;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
 	info = diag_md_session_get_pid(pid);
 	mask_info = (!info) ? &event_mask : info->event_mask;
 	if (!src_buf || !dest_buf || src_len <= sizeof(uint8_t) ||
@@ -1137,17 +1182,21 @@ static int diag_cmd_toggle_events(unsigned char *src_buf, int src_len,
 		       __func__, src_buf, src_len, dest_buf, dest_len,
 		       mask_info);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	if (!mask_info->ptr) {
 		pr_err("diag: In %s, invalid input mask_info->ptr: %pK\n",
 			__func__, mask_info->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 
 	toggle = *(src_buf + 1);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
 	if (toggle) {
 		mask_info->status = DIAG_CTRL_MASK_ALL_ENABLED;
 		memset(mask_info->ptr, 0xFF, mask_info->mask_len);
@@ -1156,7 +1205,9 @@ static int diag_cmd_toggle_events(unsigned char *src_buf, int src_len,
 		memset(mask_info->ptr, 0, mask_info->mask_len);
 	}
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	if (diag_check_update(APPS_DATA, pid))
 		diag_update_userspace_clients(EVENT_MASKS_TYPE);
 
@@ -1166,18 +1217,15 @@ static int diag_cmd_toggle_events(unsigned char *src_buf, int src_len,
 	 */
 	header.cmd_code = DIAG_CMD_EVENT_TOGGLE;
 	header.padding = 0;
-	for (i = 0; i < NUM_MD_SESSIONS; i++) {
-		if (i == APPS_DATA)
-			continue;
+	for (i = 0; i < NUM_PERIPHERALS; i++) {
 		if (!diag_check_update(i, pid))
 			continue;
-		if (i > NUM_PERIPHERALS)
-			peripheral = diag_search_peripheral_by_pd(i);
-		else
-			peripheral = i;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 		mutex_lock(&driver->md_session_lock);
-		diag_send_event_mask_update(peripheral);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
+		diag_send_event_mask_update(i);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	}
 	memcpy(dest_buf, &header, sizeof(header));
 	write_len += sizeof(header);
@@ -1196,36 +1244,42 @@ static int diag_cmd_get_log_mask(unsigned char *src_buf, int src_len,
 	int rsp_header_len = sizeof(struct diag_log_config_rsp_t);
 	uint32_t mask_size = 0;
 	struct diag_log_mask_t *log_item = NULL;
-	struct diag_log_config_get_req_t *req;
+	struct diag_log_config_req_t *req;
 	struct diag_log_config_rsp_t rsp;
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_md_session_t *info = NULL;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
 	info = diag_md_session_get_pid(pid);
 
 	mask_info = (!info) ? &log_mask : info->log_mask;
 	if (!src_buf || !dest_buf || dest_len <= 0 || !mask_info ||
-		src_len < sizeof(struct diag_log_config_get_req_t)) {
+		src_len < sizeof(struct diag_log_config_req_t)) {
 		pr_err("diag: Invalid input in %s, src_buf: %pK, src_len: %d, dest_buf: %pK, dest_len: %d, mask_info: %pK\n",
 		       __func__, src_buf, src_len, dest_buf, dest_len,
 		       mask_info);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
+	
 	if (!mask_info->ptr) {
 		pr_err("diag: In %s, invalid input mask_info->ptr: %pK\n",
 			__func__, mask_info->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 
 	if (!diag_apps_responds()) {
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return 0;
 	}
 
-	req = (struct diag_log_config_get_req_t *)src_buf;
+	req = (struct diag_log_config_req_t *)src_buf;
 	read_len += req_header_len;
 
 	rsp.cmd_code = DIAG_CMD_LOG_CONFIG;
@@ -1244,6 +1298,7 @@ static int diag_cmd_get_log_mask(unsigned char *src_buf, int src_len,
 		pr_err("diag: Invalid input in %s, mask: %pK\n",
 			__func__, log_item);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	for (i = 0; i < MAX_EQUIP_ID; i++, log_item++) {
@@ -1286,6 +1341,7 @@ static int diag_cmd_get_log_mask(unsigned char *src_buf, int src_len,
 	memcpy(dest_buf, &rsp, rsp_header_len);
 
 	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	return write_len;
 }
 
@@ -1330,20 +1386,24 @@ static int diag_cmd_set_log_mask(unsigned char *src_buf, int src_len,
 				 unsigned char *dest_buf, int dest_len,
 				 int pid)
 {
-	int i, peripheral, write_len = 0;
+	int i;
+	int write_len = 0;
 	int status = LOG_STATUS_SUCCESS;
-	int read_len = 0, payload_len = 0;
+	int read_len = 0;
+	int payload_len = 0;
 	int req_header_len = sizeof(struct diag_log_config_req_t);
 	int rsp_header_len = sizeof(struct diag_log_config_set_rsp_t);
 	uint32_t mask_size = 0;
 	struct diag_log_config_req_t *req;
 	struct diag_log_config_set_rsp_t rsp;
 	struct diag_log_mask_t *mask = NULL;
-	struct diag_mask_info *mask_info = NULL;
 	unsigned char *temp_buf = NULL;
+	struct diag_mask_info *mask_info = NULL;
 	struct diag_md_session_t *info = NULL;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
 	info = diag_md_session_get_pid(pid);
 
 	mask_info = (!info) ? &log_mask : info->log_mask;
@@ -1353,12 +1413,14 @@ static int diag_cmd_set_log_mask(unsigned char *src_buf, int src_len,
 		       __func__, src_buf, src_len, dest_buf, dest_len,
 		       mask_info);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	if (!mask_info->ptr) {
 		pr_err("diag: In %s, invalid input mask_info->ptr: %pK\n",
 			__func__, mask_info->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 
@@ -1369,6 +1431,7 @@ static int diag_cmd_set_log_mask(unsigned char *src_buf, int src_len,
 		pr_err("diag: Invalid input in %s, mask->ptr: %pK\n",
 			__func__, mask->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	if (req->equip_id >= MAX_EQUIP_ID) {
@@ -1383,13 +1446,17 @@ static int diag_cmd_set_log_mask(unsigned char *src_buf, int src_len,
 		status = LOG_STATUS_INVALID;
 	}
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
 	for (i = 0; i < MAX_EQUIP_ID && !status; i++, mask++) {
 		if (!mask || !mask->ptr)
 			continue;
 		if (mask->equip_id != req->equip_id)
 			continue;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask->lock\n", __func__, __LINE__);
 		mutex_lock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask->lock\n", __func__, __LINE__);
 
 		DIAG_LOG(DIAG_DEBUG_MASKS, "e: %d current: %d %d new: %d %d",
 			 mask->equip_id, mask->num_items_tools,
@@ -1415,6 +1482,7 @@ static int diag_cmd_set_log_mask(unsigned char *src_buf, int src_len,
 			if (!temp_buf) {
 				mask_info->status = DIAG_CTRL_MASK_INVALID;
 				mutex_unlock(&mask->lock);
+				DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 				break;
 			}
 			mask->ptr = temp_buf;
@@ -1429,11 +1497,14 @@ static int diag_cmd_set_log_mask(unsigned char *src_buf, int src_len,
 			 req->equip_id, mask->num_items_tools,
 			 mask->range_tools, mask_size);
 		mutex_unlock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 		mask_info->status = DIAG_CTRL_MASK_VALID;
 		break;
 	}
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	if (diag_check_update(APPS_DATA, pid))
 		diag_update_userspace_clients(LOG_MASKS_TYPE);
 
@@ -1444,7 +1515,7 @@ static int diag_cmd_set_log_mask(unsigned char *src_buf, int src_len,
 	payload_len = LOG_ITEMS_TO_SIZE(req->num_items);
 	if ((payload_len + rsp_header_len > dest_len) || (payload_len == 0)) {
 		pr_err("diag: In %s, invalid length, payload_len: %d, header_len: %d, dest_len: %d\n",
-		       __func__, payload_len, rsp_header_len, dest_len);
+		       __func__, payload_len, rsp_header_len , dest_len);
 		status = LOG_STATUS_FAIL;
 	}
 	rsp.cmd_code = DIAG_CMD_LOG_CONFIG;
@@ -1462,18 +1533,15 @@ static int diag_cmd_set_log_mask(unsigned char *src_buf, int src_len,
 	memcpy(dest_buf + write_len, src_buf + read_len, payload_len);
 	write_len += payload_len;
 
-	for (i = 0; i < NUM_MD_SESSIONS; i++) {
-		if (i == APPS_DATA)
-			continue;
+	for (i = 0; i < NUM_PERIPHERALS; i++) {
 		if (!diag_check_update(i, pid))
 			continue;
-		if (i > NUM_PERIPHERALS)
-			peripheral = diag_search_peripheral_by_pd(i);
-		else
-			peripheral = i;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 		mutex_lock(&driver->md_session_lock);
-		diag_send_log_mask_update(peripheral, req->equip_id);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
+		diag_send_log_mask_update(i, req->equip_id);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	}
 end:
 	return write_len;
@@ -1485,10 +1553,12 @@ static int diag_cmd_disable_log_mask(unsigned char *src_buf, int src_len,
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_log_mask_t *mask = NULL;
 	struct diag_log_config_rsp_t header;
-	int write_len = 0, i, peripheral;
+	int write_len = 0, i;
 	struct diag_md_session_t *info = NULL;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
 	info = diag_md_session_get_pid(pid);
 
 	mask_info = (!info) ? &log_mask : info->log_mask;
@@ -1498,12 +1568,14 @@ static int diag_cmd_disable_log_mask(unsigned char *src_buf, int src_len,
 		       __func__, src_buf, src_len, dest_buf, dest_len,
 		       mask_info);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	if (!mask_info->ptr) {
 		pr_err("diag: In %s, invalid input mask_info->ptr: %pK\n",
 			__func__, mask_info->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	mask = (struct diag_log_mask_t *)mask_info->ptr;
@@ -1511,17 +1583,22 @@ static int diag_cmd_disable_log_mask(unsigned char *src_buf, int src_len,
 		pr_err("diag: Invalid input in %s, mask->ptr: %pK\n",
 			__func__, mask->ptr);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	for (i = 0; i < MAX_EQUIP_ID; i++, mask++) {
 		if (mask && mask->ptr) {
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask->lock\n", __func__, __LINE__);
 			mutex_lock(&mask->lock);
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask->lock\n", __func__, __LINE__);
 			memset(mask->ptr, 0, mask->range);
 			mutex_unlock(&mask->lock);
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 		}
 	}
 	mask_info->status = DIAG_CTRL_MASK_ALL_DISABLED;
 	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	if (diag_check_update(APPS_DATA, pid))
 		diag_update_userspace_clients(LOG_MASKS_TYPE);
 
@@ -1537,18 +1614,15 @@ static int diag_cmd_disable_log_mask(unsigned char *src_buf, int src_len,
 	header.status = LOG_STATUS_SUCCESS;
 	memcpy(dest_buf, &header, sizeof(struct diag_log_config_rsp_t));
 	write_len += sizeof(struct diag_log_config_rsp_t);
-	for (i = 0; i < NUM_MD_SESSIONS; i++) {
-		if (i == APPS_DATA)
-			continue;
+	for (i = 0; i < NUM_PERIPHERALS; i++) {
 		if (!diag_check_update(i, pid))
 			continue;
-		if (i > NUM_PERIPHERALS)
-			peripheral = diag_search_peripheral_by_pd(i);
-		else
-			peripheral = i;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
 		mutex_lock(&driver->md_session_lock);
-		diag_send_log_mask_update(peripheral, ALL_EQUIP_ID);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
+		diag_send_log_mask_update(i, ALL_EQUIP_ID);
 		mutex_unlock(&driver->md_session_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
 	}
 
 	return write_len;
@@ -1570,7 +1644,7 @@ int diag_create_msg_mask_table_entry(struct diag_msg_mask_t *msg_mask,
 	msg_mask->range_tools = msg_mask->range;
 	mutex_init(&msg_mask->lock);
 	if (msg_mask->range > 0) {
-		msg_mask->ptr = kcalloc(msg_mask->range, sizeof(uint32_t),
+		msg_mask->ptr = kzalloc(msg_mask->range * sizeof(uint32_t),
 					GFP_KERNEL);
 		if (!msg_mask->ptr)
 			return -ENOMEM;
@@ -1581,12 +1655,15 @@ int diag_create_msg_mask_table_entry(struct diag_msg_mask_t *msg_mask,
 
 static int diag_create_msg_mask_table(void)
 {
-	int i, err = 0;
+	int i;
+	int err = 0;
 	struct diag_msg_mask_t *mask = (struct diag_msg_mask_t *)msg_mask.ptr;
 	struct diag_ssid_range_t range;
 
 	mutex_lock(&msg_mask.lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	driver->msg_mask_tbl_count = MSG_MASK_TBL_CNT;
 	for (i = 0; (i < driver->msg_mask_tbl_count) && mask;
 			i++, mask++) {
@@ -1597,20 +1674,26 @@ static int diag_create_msg_mask_table(void)
 			break;
 	}
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	mutex_unlock(&msg_mask.lock);
 	return err;
 }
 
 static int diag_create_build_time_mask(void)
 {
-	int i, err = 0;
+	int i;
+	int err = 0;
 	const uint32_t *tbl = NULL;
 	uint32_t tbl_size = 0;
 	struct diag_msg_mask_t *build_mask = NULL;
 	struct diag_ssid_range_t range;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_bt_mask.lock\n", __func__, __LINE__);
 	mutex_lock(&msg_bt_mask.lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired on msg_bt_mask.lock\n", __func__, __LINE__);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	driver->bt_msg_mask_tbl_count = MSG_MASK_TBL_CNT;
 	build_mask = (struct diag_msg_mask_t *)msg_bt_mask.ptr;
 	for (i = 0; (i < driver->bt_msg_mask_tbl_count) && build_mask;
@@ -1725,7 +1808,9 @@ static int diag_create_build_time_mask(void)
 		memcpy(build_mask->ptr, tbl, tbl_size);
 	}
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	mutex_unlock(&msg_bt_mask.lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released on msg_bt_mask.lock\n", __func__, __LINE__);
 	return err;
 }
 
@@ -1790,17 +1875,21 @@ static void __diag_mask_exit(struct diag_mask_info *mask_info)
 	if (!mask_info || !mask_info->ptr)
 		return;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
 	kfree(mask_info->ptr);
 	mask_info->ptr = NULL;
 	kfree(mask_info->update_buf);
 	mask_info->update_buf = NULL;
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 }
 
 int diag_log_mask_copy(struct diag_mask_info *dest, struct diag_mask_info *src)
 {
-	int i, err = 0;
+	int i;
+	int err = 0;
 	struct diag_log_mask_t *src_mask = NULL;
 	struct diag_log_mask_t *dest_mask = NULL;
 
@@ -1847,12 +1936,15 @@ void diag_log_mask_free(struct diag_mask_info *mask_info)
 	if (!mask_info || !mask_info->ptr)
 		return;
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
 	mask = (struct diag_log_mask_t *)mask_info->ptr;
 	if (!mask->ptr) {
 		pr_err("diag: Invalid input in %s, mask->ptr: %pK\n",
 			__func__, mask->ptr);
 		mutex_unlock(&mask_info->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 		return;
 	}
 	for (i = 0; i < MAX_EQUIP_ID; i++, mask++) {
@@ -1860,6 +1952,7 @@ void diag_log_mask_free(struct diag_mask_info *mask_info)
 		mask->ptr = NULL;
 	}
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 
 	__diag_mask_exit(mask_info);
 
@@ -1867,7 +1960,8 @@ void diag_log_mask_free(struct diag_mask_info *mask_info)
 
 static int diag_msg_mask_init(void)
 {
-	int err = 0, i;
+	int err = 0;
+	int i;
 
 	mutex_init(&msg_mask.lock);
 	err = __diag_mask_init(&msg_mask, MSG_MASK_SIZE, APPS_BUF_SIZE);
@@ -1879,11 +1973,14 @@ static int diag_msg_mask_init(void)
 		pr_err("diag: Unable to create msg masks, err: %d\n", err);
 		return err;
 	}
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	driver->msg_mask = &msg_mask;
 	for (i = 0; i < NUM_PERIPHERALS; i++)
 		driver->max_ssid_count[i] = 0;
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 
 	return 0;
 }
@@ -1891,7 +1988,8 @@ static int diag_msg_mask_init(void)
 int diag_msg_mask_copy(struct diag_md_session_t *new_session,
 	struct diag_mask_info *dest, struct diag_mask_info *src)
 {
-	int i, err = 0, mask_size = 0;
+	int i;
+	int err = 0;
 	struct diag_msg_mask_t *src_mask = NULL;
 	struct diag_msg_mask_t *dest_mask = NULL;
 	struct diag_ssid_range_t range;
@@ -1901,7 +1999,9 @@ int diag_msg_mask_copy(struct diag_md_session_t *new_session,
 
 	mutex_init(&dest->lock);
 	mutex_lock(&dest->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	new_session->msg_mask_tbl_count =
 		driver->msg_mask_tbl_count;
 	err = __diag_mask_init(dest,
@@ -1923,15 +2023,13 @@ int diag_msg_mask_copy(struct diag_md_session_t *new_session,
 		err = diag_create_msg_mask_table_entry(dest_mask, &range);
 		if (err)
 			break;
-		if (src_mask->range_tools < dest_mask->range)
-			mask_size = src_mask->range_tools * sizeof(uint32_t);
-		else
-			mask_size = dest_mask->range * sizeof(uint32_t);
-		memcpy(dest_mask->ptr, src_mask->ptr, mask_size);
+		memcpy(dest_mask->ptr, src_mask->ptr,
+		       dest_mask->range * sizeof(uint32_t));
 		src_mask++;
 		dest_mask++;
 	}
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	mutex_unlock(&dest->lock);
 	return err;
 }
@@ -1945,14 +2043,20 @@ void diag_msg_mask_free(struct diag_mask_info *mask_info,
 
 	if (!mask_info || !mask_info->ptr)
 		return;
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	mask = (struct diag_msg_mask_t *)mask_info->ptr;
 	if (!mask->ptr) {
 		pr_err("diag: Invalid input in %s, mask->ptr: %pK\n",
 			__func__, mask->ptr);
 		mutex_unlock(&driver->msg_mask_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 		mutex_unlock(&mask_info->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 		return;
 	}
 	msg_mask_tbl_count = (session_info) ?
@@ -1963,7 +2067,9 @@ void diag_msg_mask_free(struct diag_mask_info *mask_info,
 		mask->ptr = NULL;
 	}
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 	__diag_mask_exit(mask_info);
 }
 
@@ -1971,7 +2077,9 @@ static void diag_msg_mask_exit(void)
 {
 	int i;
 	struct diag_msg_mask_t *mask = NULL;
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	mask = (struct diag_msg_mask_t *)(msg_mask.ptr);
 	if (mask) {
 		for (i = 0; i < driver->msg_mask_tbl_count; i++, mask++)
@@ -1982,6 +2090,7 @@ static void diag_msg_mask_exit(void)
 	kfree(msg_mask.update_buf);
 	msg_mask.update_buf = NULL;
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 }
 
 static int diag_build_time_mask_init(void)
@@ -2007,7 +2116,9 @@ static void diag_build_time_mask_exit(void)
 {
 	int i;
 	struct diag_msg_mask_t *mask = NULL;
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 	mask = (struct diag_msg_mask_t *)(msg_bt_mask.ptr);
 	if (mask) {
 		for (i = 0; i < driver->bt_msg_mask_tbl_count; i++, mask++)
@@ -2016,11 +2127,13 @@ static void diag_build_time_mask_exit(void)
 		msg_bt_mask.ptr = NULL;
 	}
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 }
 
 static int diag_log_mask_init(void)
 {
-	int err = 0, i;
+	int err = 0;
+	int i;
 
 	mutex_init(&log_mask.lock);
 	err = __diag_mask_init(&log_mask, LOG_MASK_SIZE, APPS_BUF_SIZE);
@@ -2054,7 +2167,8 @@ static void diag_log_mask_exit(void)
 
 static int diag_event_mask_init(void)
 {
-	int err = 0, i;
+	int err = 0;
+	int i;
 
 	mutex_init(&event_mask.lock);
 	err = __diag_mask_init(&event_mask, EVENT_MASK_SIZE, APPS_BUF_SIZE);
@@ -2109,8 +2223,11 @@ static void diag_event_mask_exit(void)
 int diag_copy_to_user_msg_mask(char __user *buf, size_t count,
 			       struct diag_md_session_t *info)
 {
-	int i, err = 0, len = 0;
-	int copy_len = 0, total_len = 0;
+	int i;
+	int err = 0;
+	int len = 0;
+	int copy_len = 0;
+	int total_len = 0;
 	struct diag_msg_mask_userspace_t header;
 	struct diag_mask_info *mask_info = NULL;
 	struct diag_msg_mask_t *mask = NULL;
@@ -2129,15 +2246,22 @@ int diag_copy_to_user_msg_mask(char __user *buf, size_t count,
 			__func__, mask_info->ptr, mask_info->update_buf);
 		return -EINVAL;
 	}
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);	
+
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on msg_mask_lock\n", __func__, __LINE__);
 	mutex_lock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired msg_mask_lock\n", __func__, __LINE__);
 
 	mask = (struct diag_msg_mask_t *)(mask_info->ptr);
 	if (!mask->ptr) {
 		pr_err("diag: Invalid input in %s, mask->ptr: %pK\n",
 			__func__, mask->ptr);
 		mutex_unlock(&driver->msg_mask_lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 		mutex_unlock(&mask_info->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	msg_mask_tbl_count = (info) ? info->msg_mask_tbl_count :
@@ -2147,7 +2271,9 @@ int diag_copy_to_user_msg_mask(char __user *buf, size_t count,
 			continue;
 		ptr = mask_info->update_buf;
 		len = 0;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask->lock\n", __func__, __LINE__);
 		mutex_lock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask->lock\n", __func__, __LINE__);
 		header.ssid_first = mask->ssid_first;
 		header.ssid_last = mask->ssid_last_tools;
 		header.range = mask->range_tools;
@@ -2159,11 +2285,13 @@ int diag_copy_to_user_msg_mask(char __user *buf, size_t count,
 			       __func__, mask->ssid_first,
 			       mask->ssid_last_tools);
 			mutex_unlock(&mask->lock);
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 			continue;
 		}
 		memcpy(ptr + len, mask->ptr, copy_len);
 		len += copy_len;
 		mutex_unlock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 		/* + sizeof(int) to account for data_type already in buf */
 		if (total_len + sizeof(int) + len > count) {
 			pr_err("diag: In %s, unable to send msg masks to user space, total_len: %d, count: %zu\n",
@@ -2180,15 +2308,20 @@ int diag_copy_to_user_msg_mask(char __user *buf, size_t count,
 		total_len += len;
 	}
 	mutex_unlock(&driver->msg_mask_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released msg_mask_lock\n", __func__, __LINE__);
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 	return err ? err : total_len;
 }
 
 int diag_copy_to_user_log_mask(char __user *buf, size_t count,
 			       struct diag_md_session_t *info)
 {
-	int i, err = 0, len = 0;
-	int copy_len = 0, total_len = 0;
+	int i;
+	int err = 0;
+	int len = 0;
+	int copy_len = 0;
+	int total_len = 0;
 	struct diag_log_mask_userspace_t header;
 	struct diag_log_mask_t *mask = NULL;
 	struct diag_mask_info *mask_info = NULL;
@@ -2207,12 +2340,15 @@ int diag_copy_to_user_log_mask(char __user *buf, size_t count,
 		return -EINVAL;
 	}
 
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask_info->lock\n", __func__, __LINE__);
 	mutex_lock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask_info->lock\n", __func__, __LINE__);
 	mask = (struct diag_log_mask_t *)(mask_info->ptr);
 	if (!mask->ptr) {
 		pr_err("diag: Invalid input in %s, mask->ptr: %pK\n",
 			__func__, mask->ptr);
 		mutex_unlock(&mask_info->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 		return -EINVAL;
 	}
 	for (i = 0; i < MAX_EQUIP_ID; i++, mask++) {
@@ -2220,7 +2356,9 @@ int diag_copy_to_user_log_mask(char __user *buf, size_t count,
 			continue;
 		ptr = mask_info->update_buf;
 		len = 0;
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on mask->lock\n", __func__, __LINE__);
 		mutex_lock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired mask->lock\n", __func__, __LINE__);
 		header.equip_id = mask->equip_id;
 		header.num_items = mask->num_items_tools;
 		memcpy(ptr, &header, sizeof(header));
@@ -2230,11 +2368,13 @@ int diag_copy_to_user_log_mask(char __user *buf, size_t count,
 			pr_err("diag: In %s, no space to update log mask, equip_id: %d\n",
 			       __func__, mask->equip_id);
 			mutex_unlock(&mask->lock);
+			DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 			continue;
 		}
 		memcpy(ptr + len, mask->ptr, copy_len);
 		len += copy_len;
 		mutex_unlock(&mask->lock);
+		DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask->lock\n", __func__, __LINE__);
 		/* + sizeof(int) to account for data_type already in buf */
 		if (total_len + sizeof(int) + len > count) {
 			pr_err("diag: In %s, unable to send log masks to user space, total_len: %d, count: %zu\n",
@@ -2251,60 +2391,43 @@ int diag_copy_to_user_log_mask(char __user *buf, size_t count,
 		total_len += len;
 	}
 	mutex_unlock(&mask_info->lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released mask_info->lock\n", __func__, __LINE__);
 
 	return err ? err : total_len;
 }
 
 void diag_send_updates_peripheral(uint8_t peripheral)
 {
-	if (!driver->feature[peripheral].sent_feature_mask)
-		diag_send_feature_mask_update(peripheral);
-	/*
-	 * Masks (F3, logs and events) will be sent to
-	 * peripheral immediately following feature mask update only
-	 * if diag_id support is not present or
-	 * diag_id support is present and diag_id has been sent to
-	 * peripheral.
-	 */
-	if (!driver->feature[peripheral].diag_id_support ||
-		driver->diag_id_sent[peripheral]) {
-		if (driver->time_sync_enabled)
-			diag_send_time_sync_update(peripheral);
-		mutex_lock(&driver->md_session_lock);
-		if (driver->set_mask_cmd) {
-			diag_send_msg_mask_update(peripheral,
-				ALL_SSID, ALL_SSID);
-			diag_send_log_mask_update(peripheral, ALL_EQUIP_ID);
-			diag_send_event_mask_update(peripheral);
-		}
-		mutex_unlock(&driver->md_session_lock);
-		diag_send_real_time_update(peripheral,
+	diag_send_feature_mask_update(peripheral);
+	if (driver->time_sync_enabled)
+		diag_send_time_sync_update(peripheral);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: waiting on md_session_lock\n", __func__, __LINE__);
+	mutex_lock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: acquired md_session_lock\n", __func__, __LINE__);
+	diag_send_msg_mask_update(peripheral, ALL_SSID, ALL_SSID);
+	diag_send_log_mask_update(peripheral, ALL_EQUIP_ID);
+	diag_send_event_mask_update(peripheral);
+	mutex_unlock(&driver->md_session_lock);
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS, "%s:%d: released md_session_lock\n", __func__, __LINE__);
+	diag_send_real_time_update(peripheral,
 				driver->real_time_mode[DIAG_LOCAL_PROC]);
-		diag_send_peripheral_buffering_mode(
-					&driver->buffering_mode[peripheral]);
-
-		/*
-		 * Clear mask_update variable afer updating
-		 * logging masks to peripheral.
-		 */
-		mutex_lock(&driver->cntl_lock);
-		driver->mask_update ^= PERIPHERAL_MASK(peripheral);
-		mutex_unlock(&driver->cntl_lock);
-	}
+	diag_send_peripheral_buffering_mode(
+				&driver->buffering_mode[peripheral]);
 }
 
 int diag_process_apps_masks(unsigned char *buf, int len, int pid)
 {
-	int size = 0, sub_cmd = 0;
+	int size = 0;
+	int sub_cmd = 0;
 	int (*hdlr)(unsigned char *src_buf, int src_len,
 		    unsigned char *dest_buf, int dest_len, int pid) = NULL;
 
 	if (!buf || len <= 0)
 		return -EINVAL;
+	
+	DIAG_LOG(DIAG_DEBUG_PERIPHERALS,"diag cmd = %d, sub_cmd = %d", *buf, *(int *)(buf + sizeof(int)));
 
 	if (*buf == DIAG_CMD_LOG_CONFIG) {
-		if (len < (2 * sizeof(int)))
-			return -EINVAL;
 		sub_cmd = *(int *)(buf + sizeof(int));
 		switch (sub_cmd) {
 		case DIAG_CMD_OP_LOG_DISABLE:
@@ -2315,15 +2438,12 @@ int diag_process_apps_masks(unsigned char *buf, int len, int pid)
 			break;
 		case DIAG_CMD_OP_SET_LOG_MASK:
 			hdlr = diag_cmd_set_log_mask;
-			driver->set_mask_cmd = 1;
 			break;
 		case DIAG_CMD_OP_GET_LOG_MASK:
 			hdlr = diag_cmd_get_log_mask;
 			break;
 		}
 	} else if (*buf == DIAG_CMD_MSG_CONFIG) {
-		if (len < (2 * sizeof(uint8_t)))
-			return -EINVAL;
 		sub_cmd = *(uint8_t *)(buf + sizeof(uint8_t));
 		switch (sub_cmd) {
 		case DIAG_CMD_OP_GET_SSID_RANGE:
@@ -2337,21 +2457,17 @@ int diag_process_apps_masks(unsigned char *buf, int len, int pid)
 			break;
 		case DIAG_CMD_OP_SET_MSG_MASK:
 			hdlr = diag_cmd_set_msg_mask;
-			driver->set_mask_cmd = 1;
 			break;
 		case DIAG_CMD_OP_SET_ALL_MSG_MASK:
 			hdlr = diag_cmd_set_all_msg_mask;
-			driver->set_mask_cmd = 1;
 			break;
 		}
 	} else if (*buf == DIAG_CMD_GET_EVENT_MASK) {
 		hdlr = diag_cmd_get_event_mask;
 	} else if (*buf == DIAG_CMD_SET_EVENT_MASK) {
 		hdlr = diag_cmd_update_event_mask;
-		driver->set_mask_cmd = 1;
 	} else if (*buf == DIAG_CMD_EVENT_TOGGLE) {
 		hdlr = diag_cmd_toggle_events;
-		driver->set_mask_cmd = 1;
 	}
 
 	if (hdlr)
@@ -2364,7 +2480,6 @@ int diag_process_apps_masks(unsigned char *buf, int len, int pid)
 int diag_masks_init(void)
 {
 	int err = 0;
-
 	err = diag_msg_mask_init();
 	if (err)
 		goto fail;

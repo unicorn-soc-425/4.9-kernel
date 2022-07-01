@@ -59,8 +59,6 @@ struct uhid_device {
 
 static struct miscdevice uhid_misc;
 
-bool lcd_is_on = true;
-
 static void uhid_device_add_worker(struct work_struct *work)
 {
 	struct uhid_device *uhid = container_of(work, struct uhid_device, worker);
@@ -75,6 +73,7 @@ static void uhid_device_add_worker(struct work_struct *work)
 		uhid->running = false;
 	}
 }
+bool lcd_is_on = true;
 
 static void uhid_queue(struct uhid_device *uhid, struct uhid_event *ev)
 {
@@ -147,15 +146,26 @@ static void uhid_hid_stop(struct hid_device *hid)
 static int uhid_hid_open(struct hid_device *hid)
 {
 	struct uhid_device *uhid = hid->driver_data;
+	int retval = 0;
 
-	return uhid_queue_event(uhid, UHID_OPEN);
+	mutex_lock(&uhid_open_mutex);
+	if (!hid->open++) {
+		retval = uhid_queue_event(uhid, UHID_OPEN);
+		if (retval)
+			hid->open--;
+	}
+	mutex_unlock(&uhid_open_mutex);
+	return retval;
 }
 
 static void uhid_hid_close(struct hid_device *hid)
 {
 	struct uhid_device *uhid = hid->driver_data;
 
-	uhid_queue_event(uhid, UHID_CLOSE);
+	mutex_lock(&uhid_open_mutex);
+	if (!--hid->open)
+		uhid_queue_event(uhid, UHID_CLOSE);
+	mutex_unlock(&uhid_open_mutex);
 }
 
 static int uhid_hid_parse(struct hid_device *hid)
@@ -405,7 +415,7 @@ struct uhid_create_req_compat {
 static int uhid_event_from_user(const char __user *buffer, size_t len,
 				struct uhid_event *event)
 {
-	if (in_compat_syscall()) {
+	if (is_compat_task()) {
 		u32 type;
 
 		if (get_user(type, buffer))
@@ -824,9 +834,9 @@ static void __exit uhid_exit(void)
 	fb_unregister_client(&fb_block);
 	misc_deregister(&uhid_misc);
 }
+
 module_init(uhid_init);
 module_exit(uhid_exit);
-
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("David Herrmann <dh.herrmann@gmail.com>");
 MODULE_DESCRIPTION("User-space I/O driver support for HID subsystem");

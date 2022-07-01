@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -31,7 +31,6 @@
 #include <linux/clk/msm-clock-generic.h>
 #include <linux/suspend.h>
 #include <linux/regulator/rpm-smd-regulator.h>
-#include <linux/clk/msm-clk-provider.h>
 #include <linux/uaccess.h>
 #include <soc/qcom/clock-local2.h>
 #include <soc/qcom/clock-pll.h>
@@ -145,7 +144,7 @@ static struct pll_clk apcs_hf_pll = {
 	},
 };
 
-static const char * const mux_names[] = {"c0", "c1", "cci"};
+static const char const *mux_names[] = {"c0", "c1", "cci"};
 
 /* Perf Cluster */
 static struct mux_div_clk a53ssmux_perf = {
@@ -240,60 +239,6 @@ static long cpu_clk_8953_round_rate(struct clk *c, unsigned long rate)
 	return clk_round_rate(c->parent, rate);
 }
 
-#ifdef CONFIG_SEC_DEBUG_APPS_CLK_LOGGING
-typedef struct {
-	uint64_t ktime;
-	uint64_t qtime;
-	uint64_t rate;
-} apps_clk_log_t;
-
-#define MAX_CLK_LOG_CNT (10)
-
-typedef struct {
-	uint32_t max_cnt;
-	uint32_t index;
-	apps_clk_log_t log[MAX_CLK_LOG_CNT];
-} cpuclk_log_t;
-
-cpuclk_log_t cpuclk_log[2] = {
-	[0] = {.max_cnt = MAX_CLK_LOG_CNT,},
-	[1] = {.max_cnt = MAX_CLK_LOG_CNT,},
-};
-
-static void clk_osm_add_log(struct clk *cpuclk, unsigned long rate)
-{
-	cpuclk_log_t *clk = NULL;
-	apps_clk_log_t *log = NULL;
-	uint64_t idx = 0;
-
-	if (!strncmp(cpuclk->dbg_name, "a53_bc_clk", 10)) {
-		clk = &cpuclk_log[0];
-		idx = clk->index;
-		log = &clk->log[idx];
-		log->ktime = local_clock();
-		log->qtime = arch_counter_get_cntvct();
-		log->rate = rate;
-		clk->index = (clk->index + 1) % MAX_CLK_LOG_CNT;
-	}
-
-	if (!strncmp(cpuclk->dbg_name, "cci_clk", 7)) {
-		clk = &cpuclk_log[1];
-		idx = clk->index;
-		log = &clk->log[idx];
-		log->ktime = local_clock();
-		log->qtime = arch_counter_get_cntvct();
-		log->rate = rate;
-		clk->index = (clk->index + 1) % MAX_CLK_LOG_CNT;
-	}
-}
-
-void* clk_osm_get_log_addr(void)
-{
-	return (void *)&cpuclk_log;
-}
-EXPORT_SYMBOL(clk_osm_get_log_addr);
-#endif /* CONFIG_SEC_DEBUG_APPS_CLK_LOGGING */
-
 static int cpu_clk_8953_set_rate(struct clk *c, unsigned long rate)
 {
 	int ret = 0;
@@ -326,11 +271,6 @@ static int cpu_clk_8953_set_rate(struct clk *c, unsigned long rate)
 			a53_pwr_clk.c.rate  = rate;
 		cci_clk.c.rate = CCI_RATE(rate);
 	}
-
-#ifdef CONFIG_SEC_DEBUG_APPS_CLK_LOGGING
-	//	pr_info("%s [%s:%ld]\n", __func__, c->dbg_name, rate);
-	clk_osm_add_log(c, rate);
-#endif /* CONFIG_SEC_DEBUG_APPS_CLK_LOGGING */
 
 	/* Remove PM QOS request */
 	if (hw_low_power_ctrl)
@@ -374,13 +314,13 @@ static void __iomem *variable_pll_list_registers(struct clk *c, int n,
 	return PLL_MODE(pll);
 }
 
-static const  struct clk_ops clk_ops_cpu = {
+static struct clk_ops clk_ops_cpu = {
 	.set_rate = cpu_clk_8953_set_rate,
 	.round_rate = cpu_clk_8953_round_rate,
 	.handoff = cpu_clk_8953_handoff,
 };
 
-static const struct clk_ops clk_ops_cci = {
+static struct clk_ops clk_ops_cci = {
 	.set_rate = cpu_clk_cci_set_rate,
 	.round_rate = cpu_clk_8953_round_rate,
 	.handoff = cpu_clk_8953_handoff,
@@ -525,27 +465,18 @@ static struct cpu_clk_8953 *cpuclk[] = { &a53_pwr_clk, &a53_perf_clk,
 
 static struct clk *logical_cpu_to_clk(int cpu)
 {
-	struct device_node *cpu_node;
-	const u32 *cell;
-	u64 hwid;
+	struct device_node *cpu_node = of_get_cpu_node(cpu, NULL);
+	u32 reg;
 
-	cpu_node = of_get_cpu_node(cpu, NULL);
-	if (!cpu_node)
-		goto fail;
-
-	cell = of_get_property(cpu_node, "reg", NULL);
-	if (!cell) {
-		pr_err("%s: missing reg property\n", cpu_node->full_name);
-		goto fail;
+	if (cpu_node && !of_property_read_u32(cpu_node, "reg", &reg)) {
+		if ((reg | a53_pwr_clk.cpu_reg_mask) ==
+						a53_pwr_clk.cpu_reg_mask)
+			return &a53_pwr_clk.c;
+		if ((reg | a53_perf_clk.cpu_reg_mask) ==
+						a53_perf_clk.cpu_reg_mask)
+			return &a53_perf_clk.c;
 	}
 
-	hwid = of_read_number(cell, of_n_addr_cells(cpu_node));
-	if ((hwid | a53_pwr_clk.cpu_reg_mask) == a53_pwr_clk.cpu_reg_mask)
-		return &a53_pwr_clk.c;
-	if ((hwid | a53_perf_clk.cpu_reg_mask) == a53_perf_clk.cpu_reg_mask)
-		return &a53_perf_clk.c;
-
-fail:
 	return NULL;
 }
 
@@ -557,11 +488,6 @@ static int add_opp(struct clk *c, struct device *dev, unsigned long max_rate)
 	long ret;
 	bool first = true;
 	int j = 1;
-
-	if (!dev) {
-		pr_warn("clock-cpu: NULL CPU device\n");
-		return -ENODEV;
-	}
 
 	while (1) {
 		rate = c->fmax[j++];
@@ -855,13 +781,11 @@ static struct notifier_block clock_panic_notifier = {
 	.priority = 1,
 };
 
-static unsigned long pwrcl_boot_rate = 883200000;
-
 static int clock_cpu_probe(struct platform_device *pdev)
 {
 	int speed_bin, version, rc, cpu, mux_id;
 	char prop_name[] = "qcom,speedX-bin-vX-XXX";
-	unsigned long ccirate;
+	unsigned long ccirate, pwrcl_boot_rate = 883200000;
 
 	get_speed_bin(pdev, &speed_bin, &version);
 
@@ -985,7 +909,7 @@ static int clock_cpu_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id clock_cpu_match_table[] = {
+static struct of_device_id clock_cpu_match_table[] = {
 	{.compatible = "qcom,cpu-clock-8953"},
 	{}
 };
@@ -1013,7 +937,7 @@ arch_initcall(clock_cpu_init);
 #define SRC_DIV				0x1
 
 /* Configure PLL at Low frequency */
-static unsigned long pwrcl_early_boot_rate = 652800000;
+unsigned long pwrcl_early_boot_rate = 652800000;
 
 static int __init cpu_clock_pwr_init(void)
 {
@@ -1029,20 +953,9 @@ static int __init cpu_clock_pwr_init(void)
 	clk_ops_variable_rate = clk_ops_variable_rate_pll_hwfsm;
 	clk_ops_variable_rate.list_registers = variable_pll_list_registers;
 
-	/* Read back the L-val of PLL */
-	regval = readl_relaxed(virt_bases[APCS_C0_PLL_BASE] + APCS_PLL_L_VAL);
-	if (regval) {
-		pr_debug("PLL preconfigured for frequency %ld\n",
-					(19200000UL * regval));
-		pwrcl_boot_rate = (apcs_hf_pll.src_rate * regval);
-		apcs_hf_pll.c.ops->set_rate(&apcs_hf_pll.c, pwrcl_boot_rate);
-		clk_ops_variable_rate_pll_hwfsm.enable(&apcs_hf_pll.c);
-	} else {
-		__variable_rate_pll_init(&apcs_hf_pll.c);
-		apcs_hf_pll.c.ops->set_rate(&apcs_hf_pll.c,
-							pwrcl_early_boot_rate);
-		clk_ops_variable_rate_pll.enable(&apcs_hf_pll.c);
-	}
+	__variable_rate_pll_init(&apcs_hf_pll.c);
+	apcs_hf_pll.c.ops->set_rate(&apcs_hf_pll.c, pwrcl_early_boot_rate);
+	clk_ops_variable_rate_pll.enable(&apcs_hf_pll.c);
 
 	base = ioremap_nocache(APCS_ALIAS1_CMD_RCGR, SZ_8);
 	regval = readl_relaxed(base);

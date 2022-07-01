@@ -53,7 +53,7 @@ struct msmcci_hwmon {
 
 	union {
 		phys_addr_t phys_base[MAX_NUM_GROUPS];
-		void __iomem *virt_base[MAX_NUM_GROUPS];
+		void * __iomem virt_base[MAX_NUM_GROUPS];
 	};
 	int irq[MAX_NUM_GROUPS];
 	u32 event_sel[MAX_NUM_GROUPS];
@@ -597,7 +597,7 @@ static int msmcci_hwmon_driver_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id cci_match_table[] = {
+static struct of_device_id match_table[] = {
 	{ .compatible = "qcom,msmcci-hwmon" },
 	{}
 };
@@ -606,10 +606,22 @@ static struct platform_driver msmcci_hwmon_driver = {
 	.probe = msmcci_hwmon_driver_probe,
 	.driver = {
 		.name = "msmcci-hwmon",
-		.of_match_table = cci_match_table,
+		.of_match_table = match_table,
+		.owner = THIS_MODULE,
 	},
 };
 
-module_platform_driver(msmcci_hwmon_driver);
+static int __init msmcci_hwmon_init(void)
+{
+	return platform_driver_register(&msmcci_hwmon_driver);
+}
+module_init(msmcci_hwmon_init);
+
+static void __exit msmcci_hwmon_exit(void)
+{
+	platform_driver_unregister(&msmcci_hwmon_driver);
+}
+module_exit(msmcci_hwmon_exit);
+
 MODULE_DESCRIPTION("QTI CCI performance monitor driver");
 MODULE_LICENSE("GPL v2");

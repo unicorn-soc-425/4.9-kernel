@@ -23,71 +23,21 @@
 
 /* Additional internal-use only BO flags: */
 #define MSM_BO_STOLEN        0x10000000    /* try to use stolen/splash memory */
-#define MSM_BO_KEEPATTRS     0x20000000     /* keep h/w bus attributes */
 
-struct msm_gem_object;
-
-struct msm_gem_aspace_ops {
-	int (*map)(struct msm_gem_address_space *, struct msm_gem_vma *,
-		struct sg_table *sgt, void *priv, unsigned int flags);
-
-	void (*unmap)(struct msm_gem_address_space *, struct msm_gem_vma *,
-		struct sg_table *sgt, void *priv);
-
-	void (*destroy)(struct msm_gem_address_space *);
-	void (*add_to_active)(struct msm_gem_address_space *,
-		struct msm_gem_object *);
-	void (*remove_from_active)(struct msm_gem_address_space *,
-		struct msm_gem_object *);
-	int (*register_cb)(struct msm_gem_address_space *,
-			void (*cb)(void *, bool),
-			void *);
-	int (*unregister_cb)(struct msm_gem_address_space *,
-			void (*cb)(void *, bool),
-			void *);
-};
-
-struct aspace_client {
-	void (*cb)(void *, bool);
-	void *cb_data;
-	struct list_head list;
-};
-
-
-struct msm_gem_address_space {
-	const char *name;
-	struct msm_mmu *mmu;
-	const struct msm_gem_aspace_ops *ops;
-	bool domain_attached;
-	struct drm_device *dev;
-	/* list of mapped objects */
-	struct list_head active_list;
-	/* list of clients */
-	struct list_head clients;
-};
-
-struct msm_gem_vma {
-	/* Node used by the GPU address space, but not the SDE address space */
-	struct drm_mm_node node;
-	struct msm_gem_address_space *aspace;
-	uint64_t iova;
-	struct list_head list;
+struct msm_gem_buf {
+	dma_addr_t dma_addr;
+	struct dma_attrs dma_attrs;
 };
 
 struct msm_gem_object {
 	struct drm_gem_object base;
-
+	struct msm_gem_buf *buf;
 	uint32_t flags;
 
-	/**
-	 * Advice: are the backing pages purgeable?
-	 */
-	uint8_t madv;
 
-	/**
-	 * count of active vmap'ing
-	 */
-	uint8_t vmap_count;
+	/* global timestamp */
+	uint32_t read_timestamp;
+	uint32_t write_timestamp;
 
 	/* And object is either:
 	 *  inactive - on priv->inactive_list
@@ -108,10 +58,13 @@ struct msm_gem_object {
 	struct list_head submit_entry;
 
 	struct page **pages;
-	struct sg_table *sgt;
 	void *vaddr;
 
-	struct list_head domains;
+	struct {
+		struct sg_table *sgt;
+		dma_addr_t iova;
+	} domain[NUM_DOMAINS];
+	struct sg_table *import_sgt;
 
 	/* normally (resv == &_resv) except for imported bo's */
 	struct reservation_object *resv;
@@ -121,10 +74,6 @@ struct msm_gem_object {
 	 * an IOMMU.  Also used for stolen/splashscreen buffer.
 	 */
 	struct drm_mm_node *vram_node;
-	struct list_head iova_list;
-
-	struct msm_gem_address_space *aspace;
-	bool in_active_list;
 };
 #define to_msm_bo(x) container_of(x, struct msm_gem_object, base)
 
@@ -133,15 +82,20 @@ static inline bool is_active(struct msm_gem_object *msm_obj)
 	return msm_obj->gpu != NULL;
 }
 
-static inline bool is_purgeable(struct msm_gem_object *msm_obj)
+static inline uint32_t msm_gem_fence(struct msm_gem_object *msm_obj,
+		uint32_t op)
 {
-	return (msm_obj->madv == MSM_MADV_DONTNEED) && msm_obj->sgt &&
-			!msm_obj->base.dma_buf && !msm_obj->base.import_attach;
-}
+	uint32_t fence = 0;
+	struct drm_device *dev = msm_obj->base.dev;
 
-static inline bool is_vunmapable(struct msm_gem_object *msm_obj)
-{
-	return (msm_obj->vmap_count == 0) && msm_obj->vaddr;
+	mutex_lock(&dev->struct_mutex);
+	if (op & MSM_PREP_READ)
+		fence = msm_obj->write_timestamp;
+	if (op & MSM_PREP_WRITE)
+		fence = max(fence, msm_obj->read_timestamp);
+	mutex_unlock(&dev->struct_mutex);
+
+	return fence;
 }
 
 /* Created per submit-ioctl, to track bo's and cmdstream bufs, etc,
@@ -149,28 +103,32 @@ static inline bool is_vunmapable(struct msm_gem_object *msm_obj)
  * make it easier to unwind when things go wrong, etc).  This only
  * lasts for the duration of the submit-ioctl.
  */
+
+struct msm_submit_cmd {
+	uint32_t type;
+	uint32_t size;  /* in dwords */
+	uint32_t iova;
+	uint32_t idx;   /* cmdstream buffer idx in bos[] */
+};
+
+struct msm_submit_bos {
+	uint32_t flags;
+	struct msm_gem_object *obj;
+	uint32_t iova;
+};
+
 struct msm_gem_submit {
 	struct drm_device *dev;
 	struct msm_gpu *gpu;
 	struct list_head node;   /* node in gpu submit_list */
 	struct list_head bo_list;
 	struct ww_acquire_ctx ticket;
-	struct fence *fence;
-	struct pid *pid;    /* submitting process */
-	bool valid;         /* true if no cmdstream patching needed */
+	uint32_t fence;
+	bool valid;
 	unsigned int nr_cmds;
 	unsigned int nr_bos;
-	struct {
-		uint32_t type;
-		uint32_t size;  /* in dwords */
-		uint32_t iova;
-		uint32_t idx;   /* cmdstream buffer idx in bos[] */
-	} *cmd;  /* array of size nr_cmds */
-	struct {
-		uint32_t flags;
-		struct msm_gem_object *obj;
-		uint32_t iova;
-	} bos[0];
+	struct msm_submit_cmd *cmd;
+	struct msm_submit_bos *bos;
 };
 
 #endif /* __MSM_GEM_H__ */

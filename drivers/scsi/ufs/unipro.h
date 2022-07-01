@@ -125,9 +125,6 @@
 #define PA_GRANULARITY_MIN_VAL	1
 #define PA_GRANULARITY_MAX_VAL	6
 
-#define PA_GRANULARITY_MIN_VAL	1
-#define PA_GRANULARITY_MAX_VAL	6
-
 /* PHY Adapter Protocol Constants */
 #define PA_MAXDATALANES	4
 
@@ -236,14 +233,6 @@ enum ufs_unipro_ver {
 #define T_CPORTMODE		0x402B
 #define T_TC0TXMAXSDUSIZE	0x4060
 #define T_TC1TXMAXSDUSIZE	0x4061
-
-#ifdef FALSE
-#undef FALSE
-#endif
-
-#ifdef TRUE
-#undef TRUE
-#endif
 
 /* Boolean attribute values */
 enum {

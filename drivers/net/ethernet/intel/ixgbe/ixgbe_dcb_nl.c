@@ -62,7 +62,7 @@ static int ixgbe_copy_dcb_cfg(struct ixgbe_adapter *adapter, int tc_max)
 			     };
 	u8 up = dcb_getapp(adapter->netdev, &app);
 
-	if (up && !(up & BIT(adapter->fcoe.up)))
+	if (up && !(up & (1 << adapter->fcoe.up)))
 		changes |= BIT_APP_UPCHG;
 #endif
 
@@ -180,7 +180,6 @@ static void ixgbe_dcbnl_get_perm_hw_addr(struct net_device *netdev,
 	switch (adapter->hw.mac.type) {
 	case ixgbe_mac_82599EB:
 	case ixgbe_mac_X540:
-	case ixgbe_mac_X550:
 		for (j = 0; j < netdev->addr_len; j++, i++)
 			perm_addr[i] = adapter->hw.mac.san_addr[j];
 		break;
@@ -657,7 +656,7 @@ static int ixgbe_dcbnl_ieee_setapp(struct net_device *dev,
 	    app->protocol == ETH_P_FCOE) {
 		u8 app_mask = dcb_ieee_getapp_mask(dev, app);
 
-		if (app_mask & BIT(adapter->fcoe.up))
+		if (app_mask & (1 << adapter->fcoe.up))
 			return 0;
 
 		adapter->fcoe.up = app->priority;
@@ -700,7 +699,7 @@ static int ixgbe_dcbnl_ieee_delapp(struct net_device *dev,
 	    app->protocol == ETH_P_FCOE) {
 		u8 app_mask = dcb_ieee_getapp_mask(dev, app);
 
-		if (app_mask & BIT(adapter->fcoe.up))
+		if (app_mask & (1 << adapter->fcoe.up))
 			return 0;
 
 		adapter->fcoe.up = app_mask ?

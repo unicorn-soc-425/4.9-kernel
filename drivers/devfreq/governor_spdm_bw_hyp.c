@@ -1,15 +1,15 @@
 /*
- *Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
- *
- *This program is free software; you can redistribute it and/or modify
- *it under the terms of the GNU General Public License version 2 and
- *only version 2 as published by the Free Software Foundation.
- *
- *This program is distributed in the hope that it will be useful,
- *but WITHOUT ANY WARRANTY; without even the implied warranty of
- *MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *GNU General Public License for more details.
- */
+*Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+*
+*This program is free software; you can redistribute it and/or modify
+*it under the terms of the GNU General Public License version 2 and
+*only version 2 as published by the Free Software Foundation.
+*
+*This program is distributed in the hope that it will be useful,
+*but WITHOUT ANY WARRANTY; without even the implied warranty of
+*MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*GNU General Public License for more details.
+*/
 
 #include <linux/devfreq.h>
 #include <linux/init.h>
@@ -33,16 +33,16 @@ enum msm_spdm_rt_res {
 
 static LIST_HEAD(devfreqs);
 static DEFINE_MUTEX(devfreqs_lock);
+static int g_irq;
 
 static int enable_clocks(void)
 {
 	struct msm_rpm_request *rpm_req;
 	int id;
 	const int one = 1;
-
 	rpm_req = msm_rpm_create_request(MSM_RPM_CTX_ACTIVE_SET, SPDM_RES_TYPE,
 					 SPDM_RES_ID, 1);
-	if (IS_ERR_OR_NULL(rpm_req))
+	if (!rpm_req)
 		return -ENODEV;
 	msm_rpm_add_kvp_data(rpm_req, SPDM_KEY, (const uint8_t *)&one,
 			     sizeof(int));
@@ -58,10 +58,9 @@ static int disable_clocks(void)
 	struct msm_rpm_request *rpm_req;
 	int id;
 	const int zero = 0;
-
 	rpm_req = msm_rpm_create_request(MSM_RPM_CTX_ACTIVE_SET, SPDM_RES_TYPE,
 					 SPDM_RES_ID, 1);
-	if (IS_ERR_OR_NULL(rpm_req))
+	if (!rpm_req)
 		return -ENODEV;
 	msm_rpm_add_kvp_data(rpm_req, SPDM_KEY, (const uint8_t *)&zero,
 			     sizeof(int));
@@ -112,7 +111,8 @@ static irqreturn_t isr(int irq, void *dev_id)
 	return IRQ_WAKE_THREAD;
 }
 
-static int gov_spdm_hyp_target_bw(struct devfreq *devfreq, unsigned long *freq)
+static int gov_spdm_hyp_target_bw(struct devfreq *devfreq, unsigned long *freq,
+				  u32 *flag)
 {
 	struct devfreq_dev_status status;
 	int ret = -EINVAL;
@@ -132,8 +132,7 @@ static int gov_spdm_hyp_target_bw(struct devfreq *devfreq, unsigned long *freq)
 
 	if (usage > 0) {
 		/* up was already called as part of hyp, so just use the
-		 * already stored values.
-		 */
+		 * already stored values */
 		*freq = ((struct spdm_data *)devfreq->data)->new_bw;
 	} else {
 		desc.arg[0] = SPDM_CMD_GET_BW_SPECIFIC;
@@ -300,12 +299,13 @@ static int gov_spdm_hyp_eh(struct devfreq *devfreq, unsigned int event,
 			 * the spdm device probe will fail so remove it from
 			 * the list  to prevent accessing a deleted pointer in
 			 * the future
-			 */
+			 * */
 			list_del(&spdm_data->list);
 			mutex_unlock(&devfreqs_lock);
 			return -EINVAL;
 		}
 		spdm_data->enabled = true;
+		enable_irq(g_irq);
 		devfreq_monitor_start(devfreq);
 		break;
 
@@ -372,6 +372,8 @@ static int probe(struct platform_device *pdev)
 	if (ret)
 		goto no_irq;
 
+	g_irq = *irq;
+	disable_irq(*irq);
 	enable_clocks();
 	return 0;
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,12 +18,13 @@
 #include "vidc_hfi.h"
 #include "vidc_hfi_api.h"
 
-#define call_hfi_pkt_op(q, op, ...)			\
+#define call_hfi_pkt_op(q, op, args...)			\
 	(((q) && (q)->pkt_ops && (q)->pkt_ops->op) ?	\
-	((q)->pkt_ops->op(__VA_ARGS__)) : 0)
+	((q)->pkt_ops->op(args)) : 0)
 
 enum hfi_packetization_type {
-	HFI_PACKETIZATION_4XX,
+	HFI_PACKETIZATION_LEGACY,
+	HFI_PACKETIZATION_3XX,
 };
 
 struct hfi_packetization_ops {
@@ -73,6 +74,12 @@ struct hfi_packetization_ops {
 	int (*session_ftb)(struct hfi_cmd_session_fill_buffer_packet *pkt,
 		struct hal_session *session,
 		struct vidc_frame_data *output_frame);
+	int (*session_parse_seq_header)(
+		struct hfi_cmd_session_parse_sequence_header_packet *pkt,
+		struct hal_session *session, struct vidc_seq_hdr *seq_hdr);
+	int (*session_get_seq_hdr)(
+		struct hfi_cmd_session_get_sequence_header_packet *pkt,
+		struct hal_session *session, struct vidc_seq_hdr *seq_hdr);
 	int (*session_get_buf_req)(
 		struct hfi_cmd_session_get_property_packet *pkt,
 		struct hal_session *session);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -35,7 +35,6 @@
  * @ipa_dbgfs_root: IPA root debugfs folder
  * @test_dbgfs_root: UT root debugfs folder. Sub-folder of IPA root
  * @test_dbgfs_suites: Suites root debugfs folder. Sub-folder of UT root
- * @wq: workqueue struct for write operations
  */
 struct ipa_ut_context {
 	bool inited;
@@ -44,19 +43,6 @@ struct ipa_ut_context {
 	struct dentry *ipa_dbgfs_root;
 	struct dentry *test_dbgfs_root;
 	struct dentry *test_dbgfs_suites;
-	struct workqueue_struct *wq;
-};
-
-/**
- * struct ipa_ut_dbgfs_test_write_work_ctx - work_queue context
- * @dbgfs_Work: work_struct for the write_work
- * @meta_type: See enum ipa_ut_meta_test_type
- * @user_data: user data usually used to point to suite or test object
- */
-struct ipa_ut_dbgfs_test_write_work_ctx {
-	struct work_struct dbgfs_work;
-	long meta_type;
-	void *user_data;
 };
 
 static ssize_t ipa_ut_dbgfs_enable_read(struct file *file,
@@ -197,9 +183,8 @@ static void ipa_ut_show_suite_exec_summary(const struct ipa_ut_suite *suite)
 }
 
 /**
- * ipa_ut_dbgfs_meta_test_write_work_func() - Debugfs write func for a
- * for a meta test
- * @params: work struct containing write fops and completion object
+ * ipa_ut_dbgfs_meta_test_write() - Debugfs write func for a for a meta test
+ * @params: write fops
  *
  * Used to run all/regression tests in a suite
  * Create log buffer that the test can use to store ongoing logs
@@ -217,9 +202,9 @@ static void ipa_ut_show_suite_exec_summary(const struct ipa_ut_suite *suite)
  *
  * Return: Negative in failure, given characters amount in success
  */
-static void ipa_ut_dbgfs_meta_test_write_work_func(struct work_struct *work)
+static ssize_t ipa_ut_dbgfs_meta_test_write(struct file *file,
+	const char __user *buf, size_t count, loff_t *ppos)
 {
-	struct ipa_ut_dbgfs_test_write_work_ctx *write_work_ctx;
 	struct ipa_ut_suite *suite;
 	int i;
 	enum ipa_hw_type ipa_ver;
@@ -227,15 +212,16 @@ static void ipa_ut_dbgfs_meta_test_write_work_func(struct work_struct *work)
 	long meta_type;
 	bool tst_fail = false;
 
-	write_work_ctx = container_of(work, struct
-		ipa_ut_dbgfs_test_write_work_ctx, dbgfs_work);
-
 	IPA_UT_DBG("Entry\n");
 
 	mutex_lock(&ipa_ut_ctx->lock);
-	suite = (struct ipa_ut_suite *)(write_work_ctx->user_data);
+	if (file == NULL) {
+		rc = -EFAULT;
+		goto unlock_mutex;
+	}
+	suite = file->f_inode->i_private;
 	ipa_assert_on(!suite);
-	meta_type = write_work_ctx->meta_type;
+	meta_type = (long)(file->private_data);
 	IPA_UT_DBG("Meta test type %ld\n", meta_type);
 
 	_IPA_UT_TEST_LOG_BUF_NAME = kzalloc(_IPA_UT_TEST_LOG_BUF_SIZE,
@@ -346,38 +332,7 @@ free_mem:
 	_IPA_UT_TEST_LOG_BUF_NAME = NULL;
 unlock_mutex:
 	mutex_unlock(&ipa_ut_ctx->lock);
-	kfree(write_work_ctx);
-}
-
-/*
- * ipa_ut_dbgfs_meta_test_write() - Debugfs write func for a meta test
- * @params: write fops
- *
- * Run all tests in a suite using a work queue so it does not race with
- * debugfs_remove_recursive
- *
- * Return: Negative if failure. Amount of characters written if success.
- */
-static ssize_t ipa_ut_dbgfs_meta_test_write(struct file *file,
-	const char __user *buf, size_t count, loff_t *ppos)
-{
-	struct ipa_ut_dbgfs_test_write_work_ctx *write_work_ctx;
-
-	write_work_ctx = kzalloc(sizeof(*write_work_ctx), GFP_KERNEL);
-	if (!write_work_ctx) {
-		IPA_UT_ERR("kzalloc err.\n");
-		return -ENOMEM;
-	}
-
-	write_work_ctx->user_data = file->f_inode->i_private;
-	write_work_ctx->meta_type = (long)(file->private_data);
-
-	INIT_WORK(&write_work_ctx->dbgfs_work,
-		ipa_ut_dbgfs_meta_test_write_work_func);
-
-	queue_work(ipa_ut_ctx->wq, &write_work_ctx->dbgfs_work);
-
-	return count;
+	return ((!rc && !tst_fail) ? count : -EFAULT);
 }
 
 /**
@@ -507,22 +462,23 @@ static int ipa_ut_dbgfs_all_test_open(struct inode *inode,
  *
  * Return: Negative in failure, given characters amount in success
  */
-static void ipa_ut_dbgfs_test_write_work_func(struct work_struct *work)
+static ssize_t ipa_ut_dbgfs_test_write(struct file *file,
+	const char __user *buf, size_t count, loff_t *ppos)
 {
-	struct ipa_ut_dbgfs_test_write_work_ctx *write_work_ctx;
 	struct ipa_ut_test *test;
 	struct ipa_ut_suite *suite;
 	bool tst_fail = false;
 	int rc = 0;
 	enum ipa_hw_type ipa_ver;
 
-	write_work_ctx = container_of(work, struct
-		ipa_ut_dbgfs_test_write_work_ctx, dbgfs_work);
-
 	IPA_UT_DBG("Entry\n");
 
 	mutex_lock(&ipa_ut_ctx->lock);
-	test = (struct ipa_ut_test *)(write_work_ctx->user_data);
+	if (file == NULL) {
+		rc = -EFAULT;
+		goto unlock_mutex;
+	}
+	test = file->f_inode->i_private;
 	ipa_assert_on(!test);
 
 	_IPA_UT_TEST_LOG_BUF_NAME = kzalloc(_IPA_UT_TEST_LOG_BUF_SIZE,
@@ -610,30 +566,9 @@ free_mem:
 	_IPA_UT_TEST_LOG_BUF_NAME = NULL;
 unlock_mutex:
 	mutex_unlock(&ipa_ut_ctx->lock);
-	kfree(write_work_ctx);
+	return ((!rc && !tst_fail) ? count : -EFAULT);
 }
 
-static ssize_t ipa_ut_dbgfs_test_write(struct file *file,
-	const char __user *buf, size_t count, loff_t *ppos)
-{
-	struct ipa_ut_dbgfs_test_write_work_ctx *write_work_ctx;
-
-	write_work_ctx = kzalloc(sizeof(*write_work_ctx), GFP_KERNEL);
-	if (!write_work_ctx) {
-		IPA_UT_ERR("kzalloc err.\n");
-		return -ENOMEM;
-	}
-
-	write_work_ctx->user_data = file->f_inode->i_private;
-	write_work_ctx->meta_type = (long)(file->private_data);
-
-	INIT_WORK(&write_work_ctx->dbgfs_work,
-		ipa_ut_dbgfs_test_write_work_func);
-
-	queue_work(ipa_ut_ctx->wq, &write_work_ctx->dbgfs_work);
-
-	return count;
-}
 /**
  * ipa_ut_dbgfs_test_read() - Debugfs read function for a test
  * @params: read fops
@@ -958,20 +893,12 @@ static int ipa_ut_framework_init(void)
 		}
 	}
 
-	ipa_ut_ctx->wq = create_singlethread_workqueue("ipa_ut_dbgfs");
-	if (!ipa_ut_ctx->wq) {
-		IPA_UT_ERR("create workqueue failed\n");
-		ret = -ENOMEM;
-		goto unlock_mutex;
-	}
-
 	ipa_ut_ctx->test_dbgfs_root = debugfs_create_dir("test",
 		ipa_ut_ctx->ipa_dbgfs_root);
 	if (!ipa_ut_ctx->test_dbgfs_root ||
 		IS_ERR(ipa_ut_ctx->test_dbgfs_root)) {
 		IPA_UT_ERR("failed to create test debugfs dir\n");
 		ret = -EFAULT;
-		destroy_workqueue(ipa_ut_ctx->wq);
 		goto unlock_mutex;
 	}
 
@@ -981,7 +908,6 @@ static int ipa_ut_framework_init(void)
 	if (!dfile_enable || IS_ERR(dfile_enable)) {
 		IPA_UT_ERR("failed to create enable debugfs file\n");
 		ret = -EFAULT;
-		destroy_workqueue(ipa_ut_ctx->wq);
 		goto fail_clean_dbgfs;
 	}
 
@@ -1009,7 +935,6 @@ static void ipa_ut_framework_destroy(void)
 	IPA_UT_DBG("Entry\n");
 
 	mutex_lock(&ipa_ut_ctx->lock);
-	destroy_workqueue(ipa_ut_ctx->wq);
 	if (ipa_ut_ctx->enabled)
 		ipa_ut_framework_disable();
 	if (ipa_ut_ctx->inited)
@@ -1036,10 +961,9 @@ static void ipa_ut_ipa_ready_cb(void *user_data)
  * If IPA driver already ready, continue initialization immediately.
  * if not, wait for IPA ready notification by IPA driver context
  */
-int __init ipa_ut_module_init(void)
+static int __init ipa_ut_module_init(void)
 {
-	int ret = 0;
-	bool init_framewok = true;
+	int ret;
 
 	IPA_UT_INFO("Loading IPA test module...\n");
 
@@ -1051,34 +975,14 @@ int __init ipa_ut_module_init(void)
 	mutex_init(&ipa_ut_ctx->lock);
 
 	if (!ipa_is_ready()) {
-		init_framewok = false;
-
 		IPA_UT_DBG("IPA driver not ready, registering callback\n");
-
 		ret = ipa_register_ipa_ready_cb(ipa_ut_ipa_ready_cb, NULL);
 
 		/*
-		 * If the call to ipa_register_ipa_ready_cb() above
-		 * returns 0, this means that we've succeeded in
-		 * queuing up a future call to ipa_ut_framework_init()
-		 * and that the call to it will be made once the IPA
-		 * becomes ready.  If this is the case, the call to
-		 * ipa_ut_framework_init() below need not be made.
-		 *
-		 * If the call to ipa_register_ipa_ready_cb() above
-		 * returns -EEXIST, it means that during the call to
-		 * ipa_register_ipa_ready_cb(), the IPA has become
-		 * ready, and hence, no indirect call to
-		 * ipa_ut_framework_init() will be made, so we need to
-		 * call it ourselves below.
-		 *
-		 * If the call to ipa_register_ipa_ready_cb() above
-		 * return something other than 0 or -EEXIST, that's a
-		 * hard error.
+		 * If we received -EEXIST, IPA has initialized. So we need
+		 * to continue the initing process.
 		 */
-		if (ret == -EEXIST) {
-			init_framewok = true;
-		} else {
+		if (ret != -EEXIST) {
 			if (ret) {
 				IPA_UT_ERR("IPA CB reg failed - %d\n", ret);
 				kfree(ipa_ut_ctx);
@@ -1088,15 +992,12 @@ int __init ipa_ut_module_init(void)
 		}
 	}
 
-	if (init_framewok) {
-		ret = ipa_ut_framework_init();
-		if (ret) {
-			IPA_UT_ERR("framework init failed\n");
-			kfree(ipa_ut_ctx);
-			ipa_ut_ctx = NULL;
-		}
+	ret = ipa_ut_framework_init();
+	if (ret) {
+		IPA_UT_ERR("framework init failed\n");
+		kfree(ipa_ut_ctx);
+		ipa_ut_ctx = NULL;
 	}
-
 	return ret;
 }
 
@@ -1105,7 +1006,7 @@ int __init ipa_ut_module_init(void)
  *
  * Destroys the Framework and removes its context
  */
-void ipa_ut_module_exit(void)
+static void ipa_ut_module_exit(void)
 {
 	IPA_UT_DBG("Entry\n");
 
@@ -1117,9 +1018,8 @@ void ipa_ut_module_exit(void)
 	ipa_ut_ctx = NULL;
 }
 
-#if IPA_EMULATION_COMPILE == 0 /* On real UE, we have a module */
 module_init(ipa_ut_module_init);
 module_exit(ipa_ut_module_exit);
+
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("IPA Unit Test module");
-#endif

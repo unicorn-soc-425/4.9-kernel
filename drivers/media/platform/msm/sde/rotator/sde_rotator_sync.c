@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -16,179 +16,25 @@
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/fence.h>
-#include <linux/sync_file.h>
+#include <linux/sync.h>
+#include <linux/sw_sync.h>
 
 #include "sde_rotator_util.h"
 #include "sde_rotator_sync.h"
 
-#define SDE_ROT_SYNC_NAME_SIZE		64
-#define SDE_ROT_SYNC_DRIVER_NAME	"sde_rot"
-
-/**
- * struct sde_rot_fence - sync fence context
- * @base: base sync fence object
- * @name: name of this sync fence
- * @fence_list: linked list of outstanding sync fence
- */
-struct sde_rot_fence {
-	struct fence base;
-	char name[SDE_ROT_SYNC_NAME_SIZE];
-	struct list_head fence_list;
-};
-
-/**
- * struct sde_rot_timeline - sync timeline context
- * @kref: reference count of timeline
- * @lock: serialization lock for timeline and fence update
- * @name: name of timeline
- * @fence_name: fence name prefix
- * @next_value: next commit sequence number
- * @curr_value: current retired sequence number
- * @context: fence context identifier
- * @fence_list_head: linked list of outstanding sync fence
- */
 struct sde_rot_timeline {
-	struct kref kref;
-	spinlock_t lock;
-	char name[SDE_ROT_SYNC_NAME_SIZE];
-	char fence_name[SDE_ROT_SYNC_NAME_SIZE];
+	struct mutex lock;
+	struct sw_sync_timeline *timeline;
 	u32 next_value;
-	u32 curr_value;
-	u64 context;
-	struct list_head fence_list_head;
+	char fence_name[32];
 };
-
-/*
- * to_sde_rot_fence - get rotator fence from fence base object
- * @fence: Pointer to fence base object
- */
-static struct sde_rot_fence *to_sde_rot_fence(struct fence *fence)
-{
-	return container_of(fence, struct sde_rot_fence, base);
-}
-
-/*
- * to_sde_rot_timeline - get rotator timeline from fence base object
- * @fence: Pointer to fence base object
- */
-static struct sde_rot_timeline *to_sde_rot_timeline(struct fence *fence)
-{
-	return container_of(fence->lock, struct sde_rot_timeline, lock);
-}
-
-/*
- * sde_rotator_free_timeline - Free the given timeline object
- * @kref: Pointer to timeline kref object.
- */
-static void sde_rotator_free_timeline(struct kref *kref)
-{
-	struct sde_rot_timeline *tl =
-		container_of(kref, struct sde_rot_timeline, kref);
-
-	kfree(tl);
-}
-
-/*
- * sde_rotator_put_timeline - Put the given timeline object
- * @tl: Pointer to timeline object.
- */
-static void sde_rotator_put_timeline(struct sde_rot_timeline *tl)
-{
-	if (!tl) {
-		SDEROT_ERR("invalid parameters\n");
-		return;
-	}
-
-	kref_put(&tl->kref, sde_rotator_free_timeline);
-}
-
-/*
- * sde_rotator_get_timeline - Get the given timeline object
- * @tl: Pointer to timeline object.
- */
-static void sde_rotator_get_timeline(struct sde_rot_timeline *tl)
-{
-	if (!tl) {
-		SDEROT_ERR("invalid parameters\n");
-		return;
-	}
-
-	kref_get(&tl->kref);
-}
-
-static const char *sde_rot_fence_get_driver_name(struct fence *fence)
-{
-	return SDE_ROT_SYNC_DRIVER_NAME;
-}
-
-static const char *sde_rot_fence_get_timeline_name(struct fence *fence)
-{
-	struct sde_rot_timeline *tl = to_sde_rot_timeline(fence);
-
-	return tl->name;
-}
-
-static bool sde_rot_fence_enable_signaling(struct fence *fence)
-{
-	return true;
-}
-
-static bool sde_rot_fence_signaled(struct fence *fence)
-{
-	struct sde_rot_timeline *tl = to_sde_rot_timeline(fence);
-	bool status;
-
-	status = ((s32) (tl->curr_value - fence->seqno)) >= 0;
-	SDEROT_DBG("status:%d fence seq:%d and timeline:%d\n",
-			status, fence->seqno, tl->curr_value);
-	return status;
-}
-
-static void sde_rot_fence_release(struct fence *fence)
-{
-	struct sde_rot_fence *f = to_sde_rot_fence(fence);
-	unsigned long flags;
-
-	spin_lock_irqsave(fence->lock, flags);
-	if (!list_empty(&f->fence_list))
-		list_del(&f->fence_list);
-	spin_unlock_irqrestore(fence->lock, flags);
-	sde_rotator_put_timeline(to_sde_rot_timeline(fence));
-	kfree_rcu(f, base.rcu);
-}
-
-static void sde_rot_fence_value_str(struct fence *fence, char *str, int size)
-{
-	snprintf(str, size, "%u", fence->seqno);
-}
-
-static void sde_rot_fence_timeline_value_str(struct fence *fence, char *str,
-		int size)
-{
-	struct sde_rot_timeline *tl = to_sde_rot_timeline(fence);
-
-	snprintf(str, size, "%u", tl->curr_value);
-}
-
-static struct fence_ops sde_rot_fence_ops = {
-	.get_driver_name = sde_rot_fence_get_driver_name,
-	.get_timeline_name = sde_rot_fence_get_timeline_name,
-	.enable_signaling = sde_rot_fence_enable_signaling,
-	.signaled = sde_rot_fence_signaled,
-	.wait = fence_default_wait,
-	.release = sde_rot_fence_release,
-	.fence_value_str = sde_rot_fence_value_str,
-	.timeline_value_str = sde_rot_fence_timeline_value_str,
-};
-
 /*
  * sde_rotator_create_timeline - Create timeline object with the given name
  * @name: Pointer to name character string.
  */
 struct sde_rot_timeline *sde_rotator_create_timeline(const char *name)
 {
+	char tl_name[32];
 	struct sde_rot_timeline *tl;
 
 	if (!name) {
@@ -200,12 +46,18 @@ struct sde_rot_timeline *sde_rotator_create_timeline(const char *name)
 	if (!tl)
 		return NULL;
 
-	kref_init(&tl->kref);
-	snprintf(tl->name, sizeof(tl->name), "rot_timeline_%s", name);
+	snprintf(tl_name, sizeof(tl_name), "rot_timeline_%s", name);
+	SDEROT_DBG("timeline name=%s\n", tl_name);
+	tl->timeline = sw_sync_timeline_create(tl_name);
+	if (!tl->timeline) {
+		SDEROT_ERR("fail to allocate timeline\n");
+		kfree(tl);
+		return NULL;
+	}
+
 	snprintf(tl->fence_name, sizeof(tl->fence_name), "rot_fence_%s", name);
-	spin_lock_init(&tl->lock);
-	tl->context = fence_context_alloc(1);
-	INIT_LIST_HEAD(&tl->fence_list_head);
+	mutex_init(&tl->lock);
+	tl->next_value = 0;
 
 	return tl;
 }
@@ -216,28 +68,15 @@ struct sde_rot_timeline *sde_rotator_create_timeline(const char *name)
  */
 void sde_rotator_destroy_timeline(struct sde_rot_timeline *tl)
 {
-	sde_rotator_put_timeline(tl);
-}
-
-/*
- * sde_rotator_inc_timeline_locked - Increment timeline by given amount
- * @tl: Pointer to timeline object.
- * @increment: the amount to increase the timeline by.
- */
-static int sde_rotator_inc_timeline_locked(struct sde_rot_timeline *tl,
-		int increment)
-{
-	struct sde_rot_fence *f, *next;
-
-	tl->curr_value += increment;
-	list_for_each_entry_safe(f, next, &tl->fence_list_head, fence_list) {
-		if (fence_is_signaled_locked(&f->base)) {
-			SDEROT_DBG("%s signaled\n", f->name);
-			list_del_init(&f->fence_list);
-		}
+	if (!tl) {
+		SDEROT_ERR("invalid parameters\n");
+		return;
 	}
 
-	return 0;
+	if (tl->timeline)
+		sync_timeline_destroy((struct sync_timeline *) tl->timeline);
+
+	kfree(tl);
 }
 
 /*
@@ -246,21 +85,19 @@ static int sde_rotator_inc_timeline_locked(struct sde_rot_timeline *tl,
  */
 void sde_rotator_resync_timeline(struct sde_rot_timeline *tl)
 {
-	unsigned long flags;
-	s32 val;
+	int val;
 
-	if (!tl) {
+	if (!tl || !tl->timeline) {
 		SDEROT_ERR("invalid parameters\n");
 		return;
 	}
-
-	spin_lock_irqsave(&tl->lock, flags);
-	val = tl->next_value - tl->curr_value;
+	mutex_lock(&tl->lock);
+	val = tl->next_value - tl->timeline->value;
 	if (val > 0) {
-		SDEROT_WARN("flush %s:%d\n", tl->name, val);
-		sde_rotator_inc_timeline_locked(tl, val);
+		SDEROT_WARN("flush %s:%d\n", tl->fence_name, val);
+		sw_sync_timeline_inc(tl->timeline, val);
 	}
-	spin_unlock_irqrestore(&tl->lock, flags);
+	mutex_unlock(&tl->lock);
 }
 
 /*
@@ -271,40 +108,64 @@ void sde_rotator_resync_timeline(struct sde_rot_timeline *tl)
  * @timestamp: Pointer to timestamp of the returned fence. Null if not required.
  */
 struct sde_rot_sync_fence *sde_rotator_get_sync_fence(
-		struct sde_rot_timeline *tl, int *fence_fd, u32 *timestamp)
+		struct sde_rot_timeline *tl, int *fence_fd,
+		u32 *timestamp)
 {
-	struct sde_rot_fence *f;
-	unsigned long flags;
 	u32 val;
+	struct sync_pt *sync_pt;
+	struct sync_fence *fence;
 
-	if (!tl) {
+	if (!tl || !tl->timeline) {
 		SDEROT_ERR("invalid parameters\n");
 		return NULL;
 	}
 
-	f = kzalloc(sizeof(struct sde_rot_fence), GFP_KERNEL);
-	if (!f)
-		return NULL;
+	mutex_lock(&tl->lock);
+	val = tl->next_value + 1;
 
-	INIT_LIST_HEAD(&f->fence_list);
-	spin_lock_irqsave(&tl->lock, flags);
-	val = ++(tl->next_value);
-	fence_init(&f->base, &sde_rot_fence_ops, &tl->lock, tl->context, val);
-	list_add_tail(&f->fence_list, &tl->fence_list_head);
-	sde_rotator_get_timeline(tl);
-	spin_unlock_irqrestore(&tl->lock, flags);
-	snprintf(f->name, sizeof(f->name), "%s_%u", tl->fence_name, val);
+	sync_pt = sw_sync_pt_create(tl->timeline, val);
+	if (sync_pt == NULL) {
+		SDEROT_ERR("cannot create sync point\n");
+		goto sync_pt_create_err;
+	}
 
-	if (fence_fd)
-		*fence_fd = sde_rotator_get_sync_fence_fd(
-				(struct sde_rot_sync_fence *) &f->base);
+	/* create fence */
+	fence = sync_fence_create(tl->fence_name, sync_pt);
+	if (fence == NULL) {
+		SDEROT_ERR("%s: cannot create fence\n",
+				tl->fence_name);
+		goto sync_fence_create_err;
+	}
+
+	if (fence_fd) {
+		int fd = get_unused_fd_flags(0);
+
+		if (fd < 0) {
+			SDEROT_ERR("get_unused_fd_flags failed error:0x%x\n",
+					fd);
+			goto get_fd_err;
+		}
+
+		sync_fence_install(fence, fd);
+		*fence_fd = fd;
+	}
 
 	if (timestamp)
 		*timestamp = val;
 
-	SDEROT_DBG("output sync fence created at val=%u\n", val);
+	tl->next_value++;
+	mutex_unlock(&tl->lock);
+	SDEROT_DBG("output sync point created at val=%u\n", val);
 
-	return (struct sde_rot_sync_fence *) &f->base;
+	return (struct sde_rot_sync_fence *) fence;
+get_fd_err:
+	SDEROT_DBG("sys_fence_put c:%p\n", fence);
+	sync_fence_put(fence);
+sync_fence_create_err:
+	sync_pt_free(sync_pt);
+sync_pt_create_err:
+	mutex_unlock(&tl->lock);
+	return NULL;
 }
 
 /*
@@ -314,19 +175,16 @@ struct sde_rot_sync_fence *sde_rotator_get_sync_fence(
  */
 int sde_rotator_inc_timeline(struct sde_rot_timeline *tl, int increment)
 {
-	unsigned long flags;
-	int rc;
-
-	if (!tl) {
+	if (!tl || !tl->timeline) {
 		SDEROT_ERR("invalid parameters\n");
 		return -EINVAL;
 	}
 
-	spin_lock_irqsave(&tl->lock, flags);
-	rc = sde_rotator_inc_timeline_locked(tl, increment);
-	spin_unlock_irqrestore(&tl->lock, flags);
+	mutex_lock(&tl->lock);
+	sw_sync_timeline_inc(tl->timeline, increment);
+	mutex_unlock(&tl->lock);
 
-	return rc;
+	return 0;
 }
 
 /*
@@ -335,10 +193,8 @@ int sde_rotator_inc_timeline(struct sde_rot_timeline *tl, int increment)
  */
 u32 sde_rotator_get_timeline_commit_ts(struct sde_rot_timeline *tl)
 {
-	if (!tl) {
-		SDEROT_ERR("invalid parameters\n");
+	if (!tl)
 		return 0;
-	}
 
 	return tl->next_value;
 }
@@ -349,12 +205,12 @@ u32 sde_rotator_get_timeline_commit_ts(struct sde_rot_timeline *tl)
  */
 u32 sde_rotator_get_timeline_retire_ts(struct sde_rot_timeline *tl)
 {
-	if (!tl) {
+	if (!tl || !tl->timeline) {
 		SDEROT_ERR("invalid parameters\n");
 		return 0;
 	}
 
-	return tl->curr_value;
+	return tl->timeline->value;
 }
 
 /*
@@ -368,7 +224,7 @@ void sde_rotator_put_sync_fence(struct sde_rot_sync_fence *fence)
 		return;
 	}
 
-	fence_put((struct fence *) fence);
+	sync_fence_put((struct sync_fence *) fence);
 }
 
 /*
@@ -379,24 +235,10 @@ void sde_rotator_put_sync_fence(struct sde_rot_sync_fence *fence)
 int sde_rotator_wait_sync_fence(struct sde_rot_sync_fence *fence,
 		long timeout)
 {
-	int rc;
-
-	if (!fence) {
-		SDEROT_ERR("invalid parameters\n");
+	if (!fence)
 		return -EINVAL;
-	}
 
-	rc = fence_wait_timeout((struct fence *) fence, false,
-			msecs_to_jiffies(timeout));
-	if (rc > 0) {
-		SDEROT_DBG("fence signaled\n");
-		rc = 0;
-	} else if (rc == 0) {
-		SDEROT_DBG("fence timeout\n");
-		rc = -ETIMEDOUT;
-	}
-
-	return rc;
+	return sync_fence_wait((struct sync_fence *) fence, timeout);
 }
 
 /*
@@ -405,7 +247,7 @@ int sde_rotator_wait_sync_fence(struct sde_rot_sync_fence *fence,
  */
 struct sde_rot_sync_fence *sde_rotator_get_fd_sync_fence(int fd)
 {
-	return (struct sde_rot_sync_fence *) sync_file_get_fence(fd);
+	return (struct sde_rot_sync_fence *) sync_fence_fdget(fd);
 }
 
 /*
@@ -415,27 +257,21 @@ struct sde_rot_sync_fence *sde_rotator_get_fd_sync_fence(int fd)
 int sde_rotator_get_sync_fence_fd(struct sde_rot_sync_fence *fence)
 {
 	int fd;
-	struct sync_file *sync_file;
 
 	if (!fence) {
 		SDEROT_ERR("invalid parameters\n");
 		return -EINVAL;
 	}
 
-	fd = get_unused_fd_flags(O_CLOEXEC);
+	fd = get_unused_fd_flags(0);
+
 	if (fd < 0) {
 		SDEROT_ERR("fail to get unused fd\n");
 		return fd;
 	}
 
-	sync_file = sync_file_create((struct fence *) fence);
-	if (!sync_file) {
-		put_unused_fd(fd);
-		SDEROT_ERR("failed to create sync file\n");
-		return -ENOMEM;
-	}
-
-	fd_install(fd, sync_file->file);
+	sync_fence_install((struct sync_fence *) fence, fd);
 
 	return fd;
 }
+

@@ -16,6 +16,16 @@
 #ifndef _CI13XXX_h_
 #define _CI13XXX_h_
 
+#ifdef CONFIG_USB_CHARGING_EVENT
+#if defined(CONFIG_BATTERY_SAMSUNG_V2)
+#include "../../battery_v2/include/sec_charging_common.h"
+#elif defined(CONFIG_BATTERY_SAMSUNG_V2_LEGACY)
+#include "../../battery_v2_legacy/include/sec_charging_common.h"
+#else
+#include <linux/battery/sec_charging_common.h>
+#endif
+#endif
+
 /******************************************************************************
  * DEFINE
  *****************************************************************************/
@@ -57,7 +67,7 @@ struct ci13xxx_td {
 #define TD_CURR_OFFSET        (0x0FFFUL <<  0)
 #define TD_FRAME_NUM          (0x07FFUL <<  0)
 #define TD_RESERVED_MASK      (0x0FFFUL <<  0)
-} __packed __aligned(4);
+} __attribute__ ((packed, aligned(4)));
 
 /* DMA layout of queue heads */
 struct ci13xxx_qh {
@@ -75,19 +85,19 @@ struct ci13xxx_qh {
 	/* 9 */
 	u32 RESERVED;
 	struct usb_ctrlrequest   setup;
-} __packed __aligned(4);
+} __attribute__ ((packed, aligned(4)));
 
 /* cache of larger request's original attributes */
 struct ci13xxx_multi_req {
-	unsigned int	     len;
-	unsigned int	     actual;
+	unsigned             len;
+	unsigned             actual;
 	void                *buf;
 };
 
 /* Extension of usb_request */
 struct ci13xxx_req {
 	struct usb_request   req;
-	unsigned int	     map;
+	unsigned             map;
 	struct list_head     queue;
 	struct ci13xxx_td   *ptr;
 	dma_addr_t           dma;
@@ -148,7 +158,7 @@ struct ci13xxx_udc_driver {
 #define CI13XXX_CONTROLLER_UDC_STARTED_EVENT		6
 #define CI13XXX_CONTROLLER_ERROR_EVENT			7
 
-	void	(*notify_event)(struct ci13xxx *udc, unsigned int event);
+	void	(*notify_event)(struct ci13xxx *udc, unsigned event);
 	bool    (*in_lpm)(struct ci13xxx *udc);
 };
 
@@ -178,11 +188,14 @@ struct ci13xxx {
 	int                        softconnect; /* is pull-up enable allowed */
 	unsigned long dTD_update_fail_count;
 	struct usb_phy            *transceiver; /* Transceiver struct */
-	bool                      skip_flush;   /*
-						 * skip flushing remaining EP
-						 * upon flush timeout for the
-						 * first EP.
-						 */
+	bool                      skip_flush; /* skip flushing remaining EP
+						upon flush timeout for the
+						first EP. */
+
+#if IS_ENABLED(CONFIG_USB_CHARGING_EVENT)
+	struct work_struct      set_vbus_current_work;
+	int			vbus_current;
+#endif
 };
 
 /******************************************************************************

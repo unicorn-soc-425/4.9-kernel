@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2016, 2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,13 +18,11 @@
 #define CQVER		0x00
 /* capabilities */
 #define CQCAP		0x04
-#define CQCAP_CS	(1 << 28)
 /* configuration */
 #define CQCFG		0x08
 #define CQ_DCMD		0x00001000
 #define CQ_TASK_DESC_SZ 0x00000100
 #define CQ_ENABLE	0x00000001
-#define CQ_ICE_ENABLE	0x00000002
 
 /* control */
 #define CQCTL		0x0C
@@ -37,8 +35,6 @@
 #define CQIS_TCC	(1 << 1)
 #define CQIS_RED	(1 << 2)
 #define CQIS_TCL	(1 << 3)
-#define CQIS_GCE	(1 << 4)
-#define CQIS_ICCE	(1 << 5)
 
 /* interrupt status enable */
 #define CQISTE		0x14
@@ -93,12 +89,15 @@
 /* response mode error mask */
 #define CQRMEM		0x50
 #define CQ_EXCEPTION	(1 << 6)
+/* write protection violation */
+#define WP_ERASE_SKIP	(1 << 15)
+#define WP_VIOLATION	(1 << 26)
 
 /* task error info */
 #define CQTERRI		0x54
 
 /* CQTERRI bit fields */
-#define CQ_RMECI	0x3F
+#define CQ_RMECI        0x3F
 #define CQ_RMETI	(0x1F << 8)
 #define CQ_RMEFV	(1 << 15)
 #define CQ_DTECI	(0x3F << 16)
@@ -109,6 +108,8 @@
 #define GET_CMD_ERR_TAG(__r__) ((__r__ & CQ_RMETI) >> 8)
 #define GET_DAT_ERR_IDX(__r__) ((__r__ & CQ_DTECI) >> 16)
 #define GET_DAT_ERR_TAG(__r__) ((__r__ & CQ_DTETI) >> 24)
+#define GET_CMD_ERR_CMD(__r__) (__r__ & 0x3F)
+#define GET_DAT_ERR_CMD(__r__) ((__r__ & 0x3F0000) >> 16)
 
 /* command response index */
 #define CQCRI		0x58
@@ -116,7 +117,7 @@
 /* command response argument */
 #define CQCRA		0x5C
 
-#define CQ_INT_ALL	0x3F
+#define CQ_INT_ALL	0xF
 #define CQIC_DEFAULT_ICCTH 31
 #define CQIC_DEFAULT_ICTOVAL 1
 
@@ -147,22 +148,14 @@
 #define DAT_ADDR_LO(x)	((x & 0xFFFFFFFF) << 32)
 #define DAT_ADDR_HI(x)	((x & 0xFFFFFFFF) << 0)
 
-/*
- * Add new macro for updated CQ vendor specific
- * register address for SDHC v5.0 onwards.
- */
-#define CQ_V5_VENDOR_CFG	0x900
 #define CQ_VENDOR_CFG	0x100
 #define CMDQ_SEND_STATUS_TRIGGER (1 << 31)
-
-#define CQ_TASK_DESC_TASK_PARAMS_SIZE	8
-#define CQ_TASK_DESC_ICE_PARAMS_SIZE	8
 
 struct task_history {
 	u64 task;
 	bool is_dcmd;
-	u32 tag;
-	ktime_t	issue_time;
+        u32 tag;
+        ktime_t issue_time;
 };
 
 struct cmdq_host {
@@ -177,7 +170,6 @@ struct cmdq_host {
 	u32 dcmd_slot;
 	u32 caps;
 #define CMDQ_TASK_DESC_SZ_128 0x1
-#define CMDQ_CAP_CRYPTO_SUPPORT 0x2
 
 	u32 quirks;
 #define CMDQ_QUIRK_SHORT_TXFR_DESC_SZ 0x1
@@ -186,7 +178,6 @@ struct cmdq_host {
 	bool enabled;
 	bool halted;
 	bool init_done;
-	bool offset_changed;
 
 	u8 *desc_base;
 
@@ -225,11 +216,10 @@ struct cmdq_host_ops {
 	void (*clear_set_dumpregs)(struct mmc_host *mmc, bool set);
 	void (*enhanced_strobe_mask)(struct mmc_host *mmc, bool set);
 	int (*reset)(struct mmc_host *mmc);
-	void (*post_cqe_halt)(struct mmc_host *mmc);
 	int (*crypto_cfg)(struct mmc_host *mmc, struct mmc_request *mrq,
-				u32 slot, u64 *ice_ctx);
-	int (*crypto_cfg_end)(struct mmc_host *mmc, struct mmc_request *mrq);
+				u32 slot);
 	void (*crypto_cfg_reset)(struct mmc_host *mmc, unsigned int slot);
+	void (*post_cqe_halt)(struct mmc_host *mmc);
 };
 
 static inline void cmdq_writel(struct cmdq_host *host, u32 val, int reg)

@@ -211,15 +211,13 @@ bool sec_get_param(enum sec_param_index index, void *value)
 				value, &(param_data->afc_disable));
 		break;
 #endif
-#if defined(CONFIG_PD_CHARGER_HV_DISABLE)
-	case param_index_pd_hv_disable:
-		__memcpy_t(unsigned int,
-				value, &(param_data->pd_disable));
-		break;
-#endif
 	case param_index_cp_reserved_mem:
 		__memcpy_t(unsigned int,
 				value, &(param_data->cp_reserved_mem));
+		break;
+	case param_index_lcd_resolution:
+		memcpy(value, param_data->param_lcd_resolution,
+			sizeof(param_data->param_lcd_resolution));
 		break;
 	case param_index_reboot_recovery_cause:
 		memcpy(value, param_data->reboot_recovery_cause,
@@ -258,10 +256,6 @@ bool sec_get_param(enum sec_param_index index, void *value)
 		wait_for_completion(&sched_sec_param_data.work);
 		break;
 #endif
-	case param_index_VrrStatus:
-		memcpy(value, param_data->VrrStatus,
-			sizeof(param_data->VrrStatus));
-		break;
 	default:
 		ret = false;
 	}
@@ -333,20 +327,16 @@ bool sec_set_param(enum sec_param_index index, void *value)
 		}
 		break;
 #endif
-#if defined(CONFIG_PD_CHARGER_HV_DISABLE)
-	case param_index_pd_hv_disable:
-		if (*(char*)value == (char)'0' || *(char*)value == (char)'1') {
-			__memcpy_t(unsigned int,
-					&(param_data->pd_disable), value);
-		}
-		break;
-#endif
 	case param_index_cp_reserved_mem:
 		if ( *(unsigned int*)value == (unsigned int)CP_MEM_RESERVE_OFF || *(unsigned int*)value == (unsigned int)CP_MEM_RESERVE_ON_1 ||
 					 	*(unsigned int*)value == (unsigned int)CP_MEM_RESERVE_ON_2 ) {
 			__memcpy_t(unsigned int,
 					&(param_data->cp_reserved_mem), value);
 		}
+		break;
+	case param_index_lcd_resolution:
+		memcpy(&(param_data->param_lcd_resolution), value,
+				sizeof(param_data->param_lcd_resolution));
 		break;
 	case param_index_reboot_recovery_cause:
 		memcpy(param_data->reboot_recovery_cause, value,
@@ -398,10 +388,6 @@ bool sec_set_param(enum sec_param_index index, void *value)
 		wait_for_completion(&sched_sec_param_data.work);
 		break;
 #endif
-	case param_index_VrrStatus:
-		memcpy(&(param_data->VrrStatus), value,
-				sizeof(param_data->VrrStatus));
-		break;
 	default:
 		ret = false;
 		goto out;

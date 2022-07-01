@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015, 2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -73,9 +73,9 @@ static ssize_t store_##name(struct device *dev,				\
 	struct devfreq_node *n = df->data;				\
 	int ret;							\
 	unsigned int val;						\
-	ret = kstrtoint(buf, 10, &val);					\
-	if (ret)							\
-		return ret;						\
+	ret = sscanf(buf, "%u", &val);					\
+	if (ret != 1)							\
+		return -EINVAL;						\
 	val = max(val, _min);						\
 	val = min(val, _max);						\
 	n->name = val;							\
@@ -84,7 +84,7 @@ static ssize_t store_##name(struct device *dev,				\
 
 #define gov_attr(__attr, min, max)	\
 show_attr(__attr)			\
-store_attr(__attr, (min), (max))	\
+store_attr(__attr, min, max)		\
 static DEVICE_ATTR(__attr, 0644, show_##__attr, store_##__attr)
 
 static int update_node(struct devfreq_node *node)
@@ -182,14 +182,14 @@ static int cpufreq_policy_notifier(struct notifier_block *nb,
 	struct cpufreq_policy *policy = data;
 
 	switch (event) {
-	case CPUFREQ_START:
+	case CPUFREQ_CREATE_POLICY:
 		mutex_lock(&state_lock);
 		add_policy(policy);
 		update_all_devfreqs();
 		mutex_unlock(&state_lock);
 		break;
 
-	case CPUFREQ_STOP:
+	case CPUFREQ_REMOVE_POLICY:
 		mutex_lock(&state_lock);
 		if (state[policy->cpu]) {
 			state[policy->cpu]->on = false;
@@ -309,7 +309,7 @@ out:
 
 static unsigned int interpolate_freq(struct devfreq *df, unsigned int cpu)
 {
-	unsigned long *freq_table = df->profile->freq_table;
+	unsigned int *freq_table = df->profile->freq_table;
 	unsigned int cpu_min = state[cpu]->min_freq;
 	unsigned int cpu_max = state[cpu]->max_freq;
 	unsigned int cpu_freq = state[cpu]->freq;
@@ -364,7 +364,8 @@ out:
 }
 
 static int devfreq_cpufreq_get_freq(struct devfreq *df,
-					unsigned long *freq)
+					unsigned long *freq,
+					u32 *flag)
 {
 	unsigned int cpu, tgt_freq = 0;
 	struct devfreq_node *node;
@@ -623,10 +624,8 @@ static int add_table_from_of(struct device_node *of_node)
 	common_tbl = read_tbl(of_node, PROP_TABLE);
 	if (!common_tbl) {
 		tbl_list = kzalloc(sizeof(*tbl_list) * NR_CPUS, GFP_KERNEL);
-		if (!tbl_list) {
-			ret = -ENOMEM;
-			goto err_list;
-		}
+		if (!tbl_list)
+			return -ENOMEM;
 
 		for_each_possible_cpu(cpu) {
 			ret = snprintf(prop_name, prop_sz, "%s-%d",
@@ -642,8 +641,8 @@ static int add_table_from_of(struct device_node *of_node)
 		}
 	}
 	if (!common_tbl && !cnt) {
-		ret = -EINVAL;
-		goto err_tbl;
+		kfree(tbl_list);
+		return -EINVAL;
 	}
 
 	mutex_lock(&state_lock);
@@ -654,11 +653,6 @@ static int add_table_from_of(struct device_node *of_node)
 	mutex_unlock(&state_lock);
 
 	return 0;
-err_tbl:
-	kfree(tbl_list);
-err_list:
-	kfree(node);
-	return ret;
 }
 
 static int __init devfreq_cpufreq_init(void)
@@ -709,6 +703,8 @@ static void __exit devfreq_cpufreq_exit(void)
 		kfree(node);
 	}
 	mutex_unlock(&state_lock);
+
+	return;
 }
 module_exit(devfreq_cpufreq_exit);
 

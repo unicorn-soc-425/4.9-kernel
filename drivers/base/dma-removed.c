@@ -1,6 +1,6 @@
 /*
  *
- *  Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
+ *  Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  *  Copyright (C) 2000-2004 Russell King
  *
  * This program is free software; you can redistribute it and/or modify
@@ -218,18 +218,19 @@ static void removed_region_fixup(struct removed_region *dma_mem, int index)
 }
 
 void *removed_alloc(struct device *dev, size_t size, dma_addr_t *handle,
-		    gfp_t gfp, unsigned long attrs)
+		    gfp_t gfp, struct dma_attrs *attrs)
 {
-	bool no_kernel_mapping = attrs & DMA_ATTR_NO_KERNEL_MAPPING;
-	bool skip_zeroing = attrs & DMA_ATTR_SKIP_ZEROING;
-	unsigned int pageno;
+	bool no_kernel_mapping = dma_get_attr(DMA_ATTR_NO_KERNEL_MAPPING,
+					attrs);
+	bool skip_zeroing = dma_get_attr(DMA_ATTR_SKIP_ZEROING, attrs);
+	int pageno;
 	unsigned long order;
-	void __iomem *addr = NULL;
+	void *addr = NULL;
 	struct removed_region *dma_mem = dev->removed_mem;
-	unsigned int nbits;
+	int nbits;
 	unsigned int align;
 
-	if (!gfpflags_allow_blocking(gfp))
+	if (!(gfp & __GFP_WAIT))
 		return NULL;
 
 	size = PAGE_ALIGN(size);
@@ -262,7 +263,7 @@ void *removed_alloc(struct device *dev, size_t size, dma_addr_t *handle,
 			goto out;
 		}
 
-		addr = ioremap_wc(base, size);
+		addr = ioremap(base, size);
 		if (WARN_ON(!addr)) {
 			bitmap_clear(dma_mem->bitmap, pageno, nbits);
 		} else {
@@ -284,18 +285,18 @@ out:
 
 int removed_mmap(struct device *dev, struct vm_area_struct *vma,
 		 void *cpu_addr, dma_addr_t dma_addr, size_t size,
-		 unsigned long attrs)
+		 struct dma_attrs *attrs)
 {
 	return -ENXIO;
 }
 
 void removed_free(struct device *dev, size_t size, void *cpu_addr,
-		  dma_addr_t handle, unsigned long attrs)
+		  dma_addr_t handle, struct dma_attrs *attrs)
 {
-	bool no_kernel_mapping = attrs & DMA_ATTR_NO_KERNEL_MAPPING;
+	bool no_kernel_mapping = dma_get_attr(DMA_ATTR_NO_KERNEL_MAPPING,
+					attrs);
 	struct removed_region *dma_mem = dev->removed_mem;
 
-	size = PAGE_ALIGN(size);
 	if (!no_kernel_mapping)
 		iounmap(cpu_addr);
 	mutex_lock(&dma_mem->lock);
@@ -307,20 +308,21 @@ void removed_free(struct device *dev, size_t size, void *cpu_addr,
 static dma_addr_t removed_map_page(struct device *dev, struct page *page,
 			unsigned long offset, size_t size,
 			enum dma_data_direction dir,
-			unsigned long attrs)
+			struct dma_attrs *attrs)
 {
 	return ~(dma_addr_t)0;
 }
 
 static void removed_unmap_page(struct device *dev, dma_addr_t dma_handle,
 		size_t size, enum dma_data_direction dir,
-		unsigned long attrs)
+		struct dma_attrs *attrs)
 {
+	return;
 }
 
 static int removed_map_sg(struct device *dev, struct scatterlist *sg,
 			int nents, enum dma_data_direction dir,
-			unsigned long attrs)
+			struct dma_attrs *attrs)
 {
 	return 0;
 }
@@ -328,38 +330,43 @@ static int removed_map_sg(struct device *dev, struct scatterlist *sg,
 static void removed_unmap_sg(struct device *dev,
 			struct scatterlist *sg, int nents,
 			enum dma_data_direction dir,
-			unsigned long attrs)
+			struct dma_attrs *attrs)
 {
+	return;
 }
 
 static void removed_sync_single_for_cpu(struct device *dev,
 			dma_addr_t dma_handle, size_t size,
 			enum dma_data_direction dir)
 {
+	return;
 }
 
 void removed_sync_single_for_device(struct device *dev,
 			dma_addr_t dma_handle, size_t size,
 			enum dma_data_direction dir)
 {
+	return;
 }
 
 void removed_sync_sg_for_cpu(struct device *dev,
 			struct scatterlist *sg, int nents,
 			enum dma_data_direction dir)
 {
+	return;
 }
 
 void removed_sync_sg_for_device(struct device *dev,
 			struct scatterlist *sg, int nents,
 			enum dma_data_direction dir)
 {
+	return;
 }
 
-static void __iomem *removed_remap(struct device *dev, void *cpu_addr,
-			dma_addr_t handle, size_t size, unsigned long attrs)
+void *removed_remap(struct device *dev, void *cpu_addr, dma_addr_t handle,
+			size_t size, struct dma_attrs *attrs)
 {
-	return ioremap_wc(handle, size);
+	return ioremap(handle, size);
 }
 
 void removed_unremap(struct device *dev, void *remapped_address, size_t size)
@@ -367,7 +374,7 @@ void removed_unremap(struct device *dev, void *remapped_address, size_t size)
 	iounmap(remapped_address);
 }
 
-const struct dma_map_ops removed_dma_ops = {
+struct dma_map_ops removed_dma_ops = {
 	.alloc			= removed_alloc,
 	.free			= removed_free,
 	.mmap			= removed_mmap,
@@ -391,29 +398,28 @@ EXPORT_SYMBOL(removed_dma_ops);
 
 static int rmem_dma_device_init(struct reserved_mem *rmem, struct device *dev)
 {
-	struct removed_region *mem = rmem->priv;
-
-	if (!mem && dma_init_removed_memory(rmem->base, rmem->size, &mem)) {
-		pr_info("Reserved memory: failed to init DMA memory pool at %pa, size %ld MiB\n",
-			&rmem->base, (unsigned long)rmem->size / SZ_1M);
-		return -EINVAL;
-	}
+        struct removed_region *mem = rmem->priv;
+        if (!mem && dma_init_removed_memory(rmem->base, rmem->size, &mem)) {
+                pr_info("Reserved memory: failed to init DMA memory pool at %pa, size %ld MiB\n",
+                        &rmem->base, (unsigned long)rmem->size / SZ_1M);
+                return -EINVAL;
+        }
 	mem->fixup = rmem->fixup;
 	set_dma_ops(dev, &removed_dma_ops);
-	rmem->priv = mem;
-	dma_assign_removed_region(dev, mem);
+        rmem->priv = mem;
+        dma_assign_removed_region(dev, mem);
 	return 0;
 }
 
 static void rmem_dma_device_release(struct reserved_mem *rmem,
-					struct device *dev)
+                                    struct device *dev)
 {
-	dev->dma_mem = NULL;
+        dev->dma_mem = NULL;
 }
 
 static const struct reserved_mem_ops removed_mem_ops = {
-	.device_init    = rmem_dma_device_init,
-	.device_release = rmem_dma_device_release,
+        .device_init    = rmem_dma_device_init,
+        .device_release = rmem_dma_device_release,
 };
 
 static int __init removed_dma_setup(struct reserved_mem *rmem)
@@ -437,10 +443,10 @@ static int __init removed_dma_setup(struct reserved_mem *rmem)
 		dma_contiguous_early_fixup(rmem->base, rmem->size);
 	}
 
-	rmem->ops = &removed_mem_ops;
-	pr_info("Removed memory: created DMA memory pool at %pa, size %ld MiB\n",
-		&rmem->base, (unsigned long)rmem->size / SZ_1M);
-	return 0;
+        rmem->ops = &removed_mem_ops;
+        pr_info("Removed memory: created DMA memory pool at %pa, size %ld MiB\n",
+                &rmem->base, (unsigned long)rmem->size / SZ_1M);
+        return 0;
 }
 RESERVEDMEM_OF_DECLARE(dma, "removed-dma-pool", removed_dma_setup);
 #endif

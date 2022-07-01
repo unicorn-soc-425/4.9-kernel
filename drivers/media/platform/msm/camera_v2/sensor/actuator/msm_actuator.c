@@ -16,6 +16,9 @@
 #include "msm_sd.h"
 #include "msm_actuator.h"
 #include "msm_cci.h"
+#if defined(CONFIG_USE_CAMERA_HW_BIG_DATA)
+#include "msm_sensor.h"
+#endif
 
 DEFINE_MSM_MUTEX(msm_actuator_mutex);
 
@@ -25,10 +28,17 @@ DEFINE_MSM_MUTEX(msm_actuator_mutex);
 #else
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 #endif
+#define CONFIG_J8PLUS_ACTUATOR
 
+#if defined(CONFIG_J8PLUS_ACTUATOR)
+#define PARK_LENS_LONG_STEP 60
+#define PARK_LENS_MID_STEP 40
+#define PARK_LENS_SMALL_STEP 30
+#else
 #define PARK_LENS_LONG_STEP 7
 #define PARK_LENS_MID_STEP 5
 #define PARK_LENS_SMALL_STEP 3
+#endif
 #define MAX_QVALUE 4096
 
 static struct v4l2_file_operations msm_actuator_v4l2_subdev_fops;
@@ -39,6 +49,7 @@ static struct msm_actuator msm_vcm_actuator_table;
 static struct msm_actuator msm_piezo_actuator_table;
 static struct msm_actuator msm_hvcm_actuator_table;
 static struct msm_actuator msm_bivcm_actuator_table;
+static struct msm_actuator msm_hall_effect_actuator_table;
 
 static struct i2c_driver msm_actuator_i2c_driver;
 static struct msm_actuator *actuators[] = {
@@ -46,6 +57,7 @@ static struct msm_actuator *actuators[] = {
 	&msm_piezo_actuator_table,
 	&msm_hvcm_actuator_table,
 	&msm_bivcm_actuator_table,
+	&msm_hall_effect_actuator_table,
 };
 
 static int32_t msm_actuator_piezo_set_default_focus(
@@ -54,11 +66,10 @@ static int32_t msm_actuator_piezo_set_default_focus(
 {
 	int32_t rc = 0;
 	struct msm_camera_i2c_reg_setting reg_setting;
-
 	CDBG("Enter\n");
 
 	if (a_ctrl->i2c_reg_tbl == NULL) {
-		pr_err("failed. i2c reg table is NULL");
+		pr_err("failed. i2c reg tabl is NULL");
 		return -EFAULT;
 	}
 
@@ -95,7 +106,6 @@ static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 	uint16_t value = 0;
 	uint32_t size = 0, i = 0;
 	struct msm_camera_i2c_reg_array *i2c_tbl = NULL;
-
 	CDBG("Enter\n");
 
 	if (a_ctrl == NULL) {
@@ -104,7 +114,7 @@ static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 	}
 
 	if (a_ctrl->i2c_reg_tbl == NULL) {
-		pr_err("failed. i2c reg table is NULL");
+		pr_err("failed. i2c reg tabl is NULL");
 		return;
 	}
 
@@ -371,17 +381,16 @@ static int32_t msm_actuator_init_focus(struct msm_actuator_ctrl_t *a_ctrl,
 	int32_t rc = -EFAULT;
 	int32_t i = 0;
 	enum msm_camera_i2c_reg_addr_type save_addr_type;
-
 	CDBG("Enter\n");
 
 	save_addr_type = a_ctrl->i2c_client.addr_type;
 	for (i = 0; i < size; i++) {
 
 		switch (settings[i].addr_type) {
-		case MSM_CAMERA_I2C_BYTE_ADDR:
+		case MSM_ACTUATOR_BYTE_ADDR:
 			a_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_BYTE_ADDR;
 			break;
-		case MSM_CAMERA_I2C_WORD_ADDR:
+		case MSM_ACTUATOR_WORD_ADDR:
 			a_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_WORD_ADDR;
 			break;
 		default:
@@ -399,7 +408,7 @@ static int32_t msm_actuator_init_focus(struct msm_actuator_ctrl_t *a_ctrl,
 				settings[i].data_type);
 			if (settings[i].delay > 20)
 				msleep(settings[i].delay);
-			else if (settings[i].delay != 0)
+			else if (0 != settings[i].delay)
 				usleep_range(settings[i].delay * 1000,
 					(settings[i].delay * 1000) + 1000);
 			break;
@@ -445,7 +454,6 @@ static void msm_actuator_write_focus(
 	int16_t next_lens_pos = 0;
 	uint16_t damping_code_step = 0;
 	uint16_t wait_time = 0;
-
 	CDBG("Enter\n");
 
 	damping_code_step = damping_params->damping_step;
@@ -482,7 +490,6 @@ static int msm_actuator_bivcm_write_focus(
 	uint16_t damping_code_step = 0;
 	uint16_t wait_time = 0;
 	int32_t rc = 0;
-
 	CDBG("Enter\n");
 
 	damping_code_step = damping_params->damping_step;
@@ -528,13 +535,7 @@ static int32_t msm_actuator_piezo_move_focus(
 	int32_t rc = 0;
 	int32_t num_steps = move_params->num_steps;
 	struct msm_camera_i2c_reg_setting reg_setting;
-
 	CDBG("Enter\n");
-
-	if (a_ctrl->i2c_reg_tbl == NULL) {
-		pr_err("failed. i2c reg table is NULL");
-		return -EFAULT;
-	}
 
 	if (copy_from_user(&ringing_params_kernel,
 		&(move_params->ringing_params[0]),
@@ -546,6 +547,11 @@ static int32_t msm_actuator_piezo_move_focus(
 	if (num_steps <= 0 || num_steps > MAX_NUMBER_OF_STEPS) {
 		pr_err("num_steps out of range = %d\n",
 			num_steps);
+		return -EFAULT;
+	}
+
+	if (a_ctrl->i2c_reg_tbl == NULL) {
+		pr_err("failed. i2c reg tabl is NULL");
 		return -EFAULT;
 	}
 
@@ -609,10 +615,12 @@ static int32_t msm_actuator_move_focus(
 		pr_err("Invalid direction = %d\n", dir);
 		return -EFAULT;
 	}
+
 	if (a_ctrl->i2c_reg_tbl == NULL) {
-		pr_err("failed. i2c reg table is NULL");
+		pr_err("failed. i2c reg tabl is NULL");
 		return -EFAULT;
 	}
+
 	if (dest_step_pos > a_ctrl->total_steps) {
 		pr_err("Step pos greater than total steps = %d\n",
 		dest_step_pos);
@@ -647,6 +655,8 @@ static int32_t msm_actuator_move_focus(
 		a_ctrl->curr_step_pos, dest_step_pos, curr_lens_pos);
 
 	while (a_ctrl->curr_step_pos != dest_step_pos) {
+		if (a_ctrl->curr_region_index >= a_ctrl->region_size)
+			break;
 		step_boundary =
 			a_ctrl->region_params[a_ctrl->curr_region_index].
 			step_bound[dir];
@@ -733,10 +743,6 @@ static int32_t msm_actuator_bivcm_move_focus(
 		pr_err("Invalid direction = %d\n", dir);
 		return -EFAULT;
 	}
-	if (a_ctrl->i2c_reg_tbl == NULL) {
-		pr_err("failed. i2c reg table is NULL");
-		return -EFAULT;
-	}
 	if (dest_step_pos > a_ctrl->total_steps) {
 		pr_err("Step pos greater than total steps = %d\n",
 		dest_step_pos);
@@ -771,6 +777,8 @@ static int32_t msm_actuator_bivcm_move_focus(
 		a_ctrl->curr_step_pos, dest_step_pos, curr_lens_pos);
 
 	while (a_ctrl->curr_step_pos != dest_step_pos) {
+		if (a_ctrl->curr_region_index >= a_ctrl->region_size)
+			break;
 		step_boundary =
 			a_ctrl->region_params[a_ctrl->curr_region_index].
 			step_bound[dir];
@@ -824,6 +832,9 @@ static int32_t msm_actuator_park_lens(struct msm_actuator_ctrl_t *a_ctrl)
 {
 	int32_t rc = 0;
 	uint16_t next_lens_pos = 0;
+#if defined(CONFIG_J8PLUS_ACTUATOR)
+	struct msm_camera_i2c_reg_array i2c_tbl;
+#endif
 	struct msm_camera_i2c_reg_setting reg_setting;
 
 	a_ctrl->i2c_tbl_index = 0;
@@ -841,25 +852,90 @@ static int32_t msm_actuator_park_lens(struct msm_actuator_ctrl_t *a_ctrl)
 	if (a_ctrl->park_lens.max_step > a_ctrl->max_code_size)
 		a_ctrl->park_lens.max_step = a_ctrl->max_code_size;
 
+#if defined(CONFIG_J8PLUS_ACTUATOR)
+
+			CDBG("%s CONFIG_J2Y18_ACTUATOR %d\n",
+				__func__, __LINE__);
+	i2c_tbl.reg_addr = 0x07;
+	i2c_tbl.reg_data = 0x00;
+	i2c_tbl.delay = a_ctrl->park_lens.damping_delay;
+	a_ctrl->i2c_tbl_index++;
+
+	reg_setting.reg_setting = &i2c_tbl;
+	reg_setting.size = a_ctrl->i2c_tbl_index;
+	reg_setting.data_type = 1;
+	rc = a_ctrl->i2c_client.
+		i2c_func_tbl->i2c_write_table_w_microdelay(
+		&a_ctrl->i2c_client, &reg_setting);
+	if (rc < 0) {
+		pr_err("i2c write error:%d\n", rc);
+		return rc;
+	}
+	a_ctrl->i2c_tbl_index = 0;
+#endif
+
 	next_lens_pos = a_ctrl->step_position_table[a_ctrl->curr_step_pos];
 	while (next_lens_pos) {
 		/* conditions which help to reduce park lens time */
 		if (next_lens_pos > (a_ctrl->park_lens.max_step *
 			PARK_LENS_LONG_STEP)) {
+#if defined(CONFIG_J8PLUS_ACTUATOR)
+			CDBG("%s CONFIG_J2Y18_ACTUATOR 1 %d, current_pos: %d\n",
+				__func__, __LINE__, next_lens_pos);
+			next_lens_pos = next_lens_pos -
+				(a_ctrl->park_lens.max_step *
+				8);
+#else
+			pr_err("%s None CONFIG_J2Y18_ACTUATOR %d\n",
+				__func__, __LINE__);
+
 			next_lens_pos = next_lens_pos -
 				(a_ctrl->park_lens.max_step *
 				PARK_LENS_LONG_STEP);
+#endif
 		} else if (next_lens_pos > (a_ctrl->park_lens.max_step *
 			PARK_LENS_MID_STEP)) {
+#if defined(CONFIG_J8PLUS_ACTUATOR)
+			CDBG("%s CONFIG_J2Y18_ACTUATOR %d, current_pos: %d\n",
+				__func__, __LINE__, next_lens_pos);
+
+			next_lens_pos = next_lens_pos -
+				(a_ctrl->park_lens.max_step *
+				4);
+#else
+			pr_err("%s None CONFIG_J2Y18_ACTUATOR %d\n",
+				__func__, __LINE__);
+
 			next_lens_pos = next_lens_pos -
 				(a_ctrl->park_lens.max_step *
 				PARK_LENS_MID_STEP);
+#endif
 		} else if (next_lens_pos > (a_ctrl->park_lens.max_step *
 			PARK_LENS_SMALL_STEP)) {
+#if defined(CONFIG_J8PLUS_ACTUATOR)
+			CDBG("%s CONFIG_J2Y18_ACTUATOR %d, current_pos: %d\n",
+				__func__, __LINE__, next_lens_pos);
+			next_lens_pos = next_lens_pos -
+				(a_ctrl->park_lens.max_step *
+				2);
+#else
+			pr_err("%s None CONFIG_J2Y18_ACTUATOR %d\n",
+				__func__, __LINE__);
+
 			next_lens_pos = next_lens_pos -
 				(a_ctrl->park_lens.max_step *
 				PARK_LENS_SMALL_STEP);
+#endif
 		} else {
+
+#if defined(CONFIG_J8PLUS_ACTUATOR)
+	if (next_lens_pos < 100)
+		break;
+#endif
+
+			CDBG("%s CONFIG_J2Y18_ACTUATOR %d, current_pos: %d\n",
+				__func__, __LINE__, next_lens_pos);
+			
 			next_lens_pos = (next_lens_pos >
 				a_ctrl->park_lens.max_step) ?
 				(next_lens_pos - a_ctrl->park_lens.
@@ -883,7 +959,7 @@ static int32_t msm_actuator_park_lens(struct msm_actuator_ctrl_t *a_ctrl)
 		}
 		a_ctrl->i2c_tbl_index = 0;
 		/* Use typical damping time delay to avoid tick sound */
-		usleep_range(10000, 12000);
+		//usleep_range(10000, 12000);
 	}
 
 	return 0;
@@ -901,7 +977,6 @@ static int32_t msm_actuator_bivcm_init_step_table(
 	uint16_t data_size = set_info->actuator_params.data_size;
 	uint16_t mask = 0, i = 0;
 	uint32_t qvalue = 0;
-
 	CDBG("Enter\n");
 
 	for (; data_size > 0; data_size--) {
@@ -985,7 +1060,6 @@ static int32_t msm_actuator_init_step_table(struct msm_actuator_ctrl_t *a_ctrl,
 	uint16_t step_boundary = 0;
 	uint32_t max_code_size = 1;
 	uint16_t data_size = set_info->actuator_params.data_size;
-
 	CDBG("Enter\n");
 
 	/* validate the actuator state */
@@ -1070,7 +1144,6 @@ static int32_t msm_actuator_set_default_focus(
 	struct msm_actuator_move_params_t *move_params)
 {
 	int32_t rc = 0;
-
 	CDBG("Enter\n");
 
 	if (a_ctrl->curr_step_pos != 0)
@@ -1190,7 +1263,6 @@ static int32_t msm_actuator_set_position(
 	uint16_t delay;
 	uint32_t hw_params = 0;
 	struct msm_camera_i2c_reg_setting reg_setting;
-
 	CDBG("%s Enter %d\n", __func__, __LINE__);
 	if (set_pos->number_of_steps <= 0 ||
 		set_pos->number_of_steps > MAX_NUMBER_OF_STEPS) {
@@ -1246,7 +1318,6 @@ static int32_t msm_actuator_bivcm_set_position(
 	uint16_t next_lens_position;
 	uint16_t delay;
 	uint32_t hw_params = 0;
-
 	CDBG("%s Enter %d\n", __func__, __LINE__);
 	if (set_pos->number_of_steps <= 0 ||
 		set_pos->number_of_steps > MAX_NUMBER_OF_STEPS) {
@@ -1284,6 +1355,11 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 	int32_t rc = -EFAULT;
 	uint16_t i = 0;
 	struct msm_camera_cci_client *cci_client = NULL;
+#if defined(CONFIG_USE_CAMERA_HW_BIG_DATA)
+	struct cam_hw_param *hw_param = NULL;
+	uint32_t *hw_cam_position = NULL;
+	uint32_t *hw_cam_secure = NULL;
+#endif
 
 	CDBG("Enter\n");
 
@@ -1315,7 +1391,7 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 	a_ctrl->pwd_step = set_info->af_tuning_params.pwd_step;
 
 	if (copy_from_user(&a_ctrl->region_params,
-		(void __user *)set_info->af_tuning_params.region_params,
+		(void *)set_info->af_tuning_params.region_params,
 		a_ctrl->region_size * sizeof(struct region_params_t))) {
 		pr_err("Error copying region_params\n");
 		return -EFAULT;
@@ -1359,8 +1435,9 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 	}
 
 	a_ctrl->total_steps = set_info->af_tuning_params.total_steps;
+
 	if (copy_from_user(&a_ctrl->reg_tbl,
-		(void __user *)set_info->actuator_params.reg_tbl_params,
+		(void *)set_info->actuator_params.reg_tbl_params,
 		a_ctrl->reg_tbl_size *
 		sizeof(struct msm_actuator_reg_params_t))) {
 		kfree(a_ctrl->i2c_reg_tbl);
@@ -1382,8 +1459,7 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 				return -EFAULT;
 			}
 			if (copy_from_user(init_settings,
-				(void __user *)
-				set_info->actuator_params.init_settings,
+				(void *)set_info->actuator_params.init_settings,
 				set_info->actuator_params.init_setting_size *
 				sizeof(struct reg_settings_t))) {
 				kfree(init_settings);
@@ -1400,6 +1476,59 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 				kfree(a_ctrl->i2c_reg_tbl);
 				a_ctrl->i2c_reg_tbl = NULL;
 				pr_err("Error actuator_init_focus\n");
+#if defined(CONFIG_USE_CAMERA_HW_BIG_DATA)
+				if (rc == -EIO) {
+					msm_is_sec_get_sensor_position(&hw_cam_position);
+					if (hw_cam_position != NULL) {
+						switch (*hw_cam_position) {
+						case BACK_CAMERA_B:
+							if (!msm_is_sec_get_rear_hw_param(&hw_param)) {
+								if (hw_param != NULL) {
+									pr_err("[HWB_DBG][R][AF] Err\n");
+									hw_param->i2c_af_err_cnt++;
+									hw_param->need_update_to_file = TRUE;
+								}
+							}
+							break;
+
+						case FRONT_CAMERA_B:
+							msm_is_sec_get_secure_mode(&hw_cam_secure);
+							if (hw_cam_secure != NULL) {
+								switch (*hw_cam_secure) {
+								case FALSE:
+									if (!msm_is_sec_get_front_hw_param(&hw_param)) {
+										if (hw_param != NULL) {
+											pr_err("[HWB_DBG][F][AF] Err\n");
+											hw_param->i2c_af_err_cnt++;
+											hw_param->need_update_to_file = TRUE;
+										}
+									}
+									break;
+
+								case TRUE:
+									if (!msm_is_sec_get_iris_hw_param(&hw_param)) {
+										if (hw_param != NULL) {
+											pr_err("[HWB_DBG][I][AF] Err\n");
+											hw_param->i2c_af_err_cnt++;
+											hw_param->need_update_to_file = TRUE;
+										}
+									}
+									break;
+
+								default:
+									pr_err("[HWB_DBG][F_I][AF] Unsupport\n");
+									break;
+								}
+							}
+							break;
+
+						default:
+							pr_err("[HWB_DBG][NON][AF] Unsupport\n");
+							break;
+						}
+					}
+				}
+#endif
 				return -EFAULT;
 			}
 		}
@@ -1422,7 +1551,6 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 static int msm_actuator_init(struct msm_actuator_ctrl_t *a_ctrl)
 {
 	int rc = 0;
-
 	CDBG("Enter\n");
 	if (!a_ctrl) {
 		pr_err("failed\n");
@@ -1440,12 +1568,11 @@ static int msm_actuator_init(struct msm_actuator_ctrl_t *a_ctrl)
 }
 
 static int32_t msm_actuator_config(struct msm_actuator_ctrl_t *a_ctrl,
-	void *argp)
+	void __user *argp)
 {
 	struct msm_actuator_cfg_data *cdata =
 		(struct msm_actuator_cfg_data *)argp;
 	int32_t rc = -EINVAL;
-
 	mutex_lock(a_ctrl->actuator_mutex);
 	CDBG("Enter\n");
 	CDBG("%s type %d\n", __func__, cdata->cfgtype);
@@ -1526,7 +1653,6 @@ static int32_t msm_actuator_get_subdev_id(struct msm_actuator_ctrl_t *a_ctrl,
 	void *arg)
 {
 	uint32_t *subdev_id = (uint32_t *)arg;
-
 	CDBG("Enter\n");
 	if (!subdev_id) {
 		pr_err("failed\n");
@@ -1569,7 +1695,6 @@ static int msm_actuator_close(struct v4l2_subdev *sd,
 	struct v4l2_subdev_fh *fh) {
 	int rc = 0;
 	struct msm_actuator_ctrl_t *a_ctrl =  v4l2_get_subdevdata(sd);
-
 	CDBG("Enter\n");
 	if (!a_ctrl) {
 		pr_err("failed\n");
@@ -1585,13 +1710,6 @@ static int msm_actuator_close(struct v4l2_subdev *sd,
 	}
 	kfree(a_ctrl->i2c_reg_tbl);
 	a_ctrl->i2c_reg_tbl = NULL;
-	if (a_ctrl->actuator_state == ACT_OPS_ACTIVE) {
-		rc = msm_actuator_power_down(a_ctrl);
-		if (rc < 0) {
-			pr_err("%s:%d Actuator Power down failed\n",
-				__func__, __LINE__);
-		}
-	}
 	a_ctrl->actuator_state = ACT_DISABLE_STATE;
 	mutex_unlock(a_ctrl->actuator_mutex);
 	CDBG("Exit\n");
@@ -1607,8 +1725,7 @@ static long msm_actuator_subdev_ioctl(struct v4l2_subdev *sd,
 {
 	int rc;
 	struct msm_actuator_ctrl_t *a_ctrl = v4l2_get_subdevdata(sd);
-	void *argp = (void *)arg;
-
+	void __user *argp = (void __user *)arg;
 	CDBG("Enter\n");
 	CDBG("%s:%d a_ctrl %pK argp %pK\n", __func__, __LINE__, a_ctrl, argp);
 	switch (cmd) {
@@ -1858,7 +1975,6 @@ static int32_t msm_actuator_i2c_probe(struct i2c_client *client,
 	int rc = 0;
 	struct msm_actuator_ctrl_t *act_ctrl_t = NULL;
 	struct msm_actuator_vreg *vreg_cfg = NULL;
-
 	CDBG("Enter\n");
 
 	if (client == NULL) {
@@ -1868,8 +1984,10 @@ static int32_t msm_actuator_i2c_probe(struct i2c_client *client,
 
 	act_ctrl_t = kzalloc(sizeof(struct msm_actuator_ctrl_t),
 		GFP_KERNEL);
-	if (!act_ctrl_t)
+	if (!act_ctrl_t) {
+		pr_err("%s:%d failed no memory\n", __func__, __LINE__);
 		return -ENOMEM;
+	}
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		pr_err("i2c_check_functionality failed\n");
@@ -1919,8 +2037,9 @@ static int32_t msm_actuator_i2c_probe(struct i2c_client *client,
 	v4l2_set_subdevdata(&act_ctrl_t->msm_sd.sd, act_ctrl_t);
 	act_ctrl_t->msm_sd.sd.internal_ops = &msm_actuator_internal_ops;
 	act_ctrl_t->msm_sd.sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
-	media_entity_pads_init(&act_ctrl_t->msm_sd.sd.entity, 0, NULL);
-	act_ctrl_t->msm_sd.sd.entity.function = MSM_CAMERA_SUBDEV_ACTUATOR;
+	media_entity_init(&act_ctrl_t->msm_sd.sd.entity, 0, NULL, 0);
+	act_ctrl_t->msm_sd.sd.entity.type = MEDIA_ENT_T_V4L2_SUBDEV;
+	act_ctrl_t->msm_sd.sd.entity.group_id = MSM_CAMERA_SUBDEV_ACTUATOR;
 	act_ctrl_t->msm_sd.close_seq = MSM_SD_CLOSE_2ND_CATEGORY | 0x2;
 	msm_sd_register(&act_ctrl_t->msm_sd);
 	msm_cam_copy_v4l2_subdev_fops(&msm_actuator_v4l2_subdev_fops);
@@ -1947,7 +2066,6 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 	struct msm_camera_cci_client *cci_client = NULL;
 	struct msm_actuator_ctrl_t *msm_actuator_t = NULL;
 	struct msm_actuator_vreg *vreg_cfg;
-
 	CDBG("Enter\n");
 
 	if (!pdev->dev.of_node) {
@@ -1957,8 +2075,10 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 
 	msm_actuator_t = kzalloc(sizeof(struct msm_actuator_ctrl_t),
 		GFP_KERNEL);
-	if (!msm_actuator_t)
+	if (!msm_actuator_t) {
+		pr_err("%s:%d failed no memory\n", __func__, __LINE__);
 		return -ENOMEM;
+	}
 	rc = of_property_read_u32((&pdev->dev)->of_node, "cell-index",
 		&pdev->id);
 	CDBG("cell-index %d, rc %d\n", pdev->id, rc);
@@ -1990,15 +2110,16 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 	}
 	rc = msm_sensor_driver_get_gpio_data(&(msm_actuator_t->gconf),
 		(&pdev->dev)->of_node);
-	if (rc <= 0) {
-		pr_err("%s: No/Error Actuator GPIOs\n", __func__);
+	if (-ENODEV == rc) {
+		pr_notice("No valid actuator GPIOs data\n");
+	} else if (rc < 0) {
+		pr_err("Error Actuator GPIOs\n");
 	} else {
 		msm_actuator_t->cam_pinctrl_status = 1;
 		rc = msm_camera_pinctrl_init(
 			&(msm_actuator_t->pinctrl_info), &(pdev->dev));
 		if (rc < 0) {
-			pr_err("ERR:%s: Error in reading actuator pinctrl\n",
-				__func__);
+			pr_err("ERR: Error in reading actuator pinctrl\n");
 			msm_actuator_t->cam_pinctrl_status = 0;
 		}
 	}
@@ -2031,8 +2152,9 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 	msm_actuator_t->msm_sd.sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	snprintf(msm_actuator_t->msm_sd.sd.name,
 		ARRAY_SIZE(msm_actuator_t->msm_sd.sd.name), "msm_actuator");
-	media_entity_pads_init(&msm_actuator_t->msm_sd.sd.entity, 0, NULL);
-	msm_actuator_t->msm_sd.sd.entity.function = MSM_CAMERA_SUBDEV_ACTUATOR;
+	media_entity_init(&msm_actuator_t->msm_sd.sd.entity, 0, NULL, 0);
+	msm_actuator_t->msm_sd.sd.entity.type = MEDIA_ENT_T_V4L2_SUBDEV;
+	msm_actuator_t->msm_sd.sd.entity.group_id = MSM_CAMERA_SUBDEV_ACTUATOR;
 	msm_actuator_t->msm_sd.close_seq = MSM_SD_CLOSE_2ND_CATEGORY | 0x2;
 	msm_sd_register(&msm_actuator_t->msm_sd);
 	msm_actuator_t->actuator_state = ACT_DISABLE_STATE;
@@ -2045,6 +2167,215 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 		&msm_actuator_v4l2_subdev_fops;
 
 	CDBG("Exit\n");
+	return rc;
+}
+
+static int32_t msm_actuator_hall_effect_move_focus(
+	struct msm_actuator_ctrl_t *a_ctrl,
+	struct msm_actuator_move_params_t *move_params)
+{
+	int32_t rc = 0;
+	uint16_t wait_time = 0;
+	int32_t dest_step_position = move_params->dest_step_pos;
+	struct damping_params_t *damping_params =
+		&move_params->ringing_params[0];
+	uint16_t curr_lens_pos;
+	int16_t target_lens_pos;
+	uint8_t lsb;
+	uint8_t msb;
+
+	/* NULL CHECK */
+	if (a_ctrl->step_position_table == NULL) {
+		pr_err("[%s::%d] NULL pointer check fail !\n",
+			__func__, __LINE__);
+		return -EFAULT;
+	}
+
+	curr_lens_pos =
+		a_ctrl->step_position_table[a_ctrl->curr_step_pos];
+	target_lens_pos =
+		a_ctrl->step_position_table[dest_step_position];
+	CDBG("%s Enter %d\n", __func__, __LINE__);
+	wait_time = damping_params->damping_delay;
+
+	CDBG("%s curr_lens_pos=%d dest_lens_pos=%d\n", __func__,
+		curr_lens_pos, target_lens_pos);
+	CDBG("%s curr_step_pos=%d dest_step_position=%d\n", __func__,
+		a_ctrl->curr_step_pos, dest_step_position);
+
+	if (curr_lens_pos != target_lens_pos) {
+		msb = ((target_lens_pos << 7) & 0x80);
+		lsb = target_lens_pos >> 1;
+
+		rc = a_ctrl->i2c_client.i2c_func_tbl->i2c_write(
+			&a_ctrl->i2c_client, 0x00, lsb,
+			MSM_CAMERA_I2C_BYTE_DATA);
+		if (rc < 0) {
+			pr_err("%s Failed I2C write Line %d\n", __func__,
+				__LINE__);
+			return rc;
+		}
+
+		rc = a_ctrl->i2c_client.i2c_func_tbl->i2c_write(
+			&a_ctrl->i2c_client, 0x01, msb,
+			MSM_CAMERA_I2C_BYTE_DATA);
+		if (rc < 0) {
+			pr_err("%s Failed I2C write Line %d\n", __func__,
+				__LINE__);
+			return rc;
+		}
+		usleep_range(wait_time, wait_time + 1000);
+
+#if defined(CONFIG_BU24219_OIS)
+		rc = bu24219_ois_shift_calibration(target_lens_pos);
+		if (rc < 0) {
+			pr_err("%s Failed to ois shift calibration %d\n", __func__,
+			__LINE__);
+			rc = 0; // Ignore Shift error
+		}
+#endif
+
+	}
+
+	a_ctrl->curr_step_pos = dest_step_position;
+	CDBG("%s exit %d\n", __func__, __LINE__);
+	return rc;
+}
+
+static int32_t msm_actuator_hall_effect_init_focus(
+	struct msm_actuator_ctrl_t *a_ctrl,
+	uint16_t size,
+	struct reg_settings_t *settings)
+{
+	int32_t rc = 0;
+	int16_t initial_position = 0;
+	uint8_t lsb;
+	uint8_t msb;
+
+	initial_position = a_ctrl->initial_code;
+
+	CDBG("%s [QTI] Enter %d\n", __func__, __LINE__);
+	CDBG("%s [QTI] initial_position = %d", __func__, initial_position);
+
+	msb = ((initial_position << 7) & 0x80);
+	lsb = initial_position >> 1;
+
+	rc = a_ctrl->i2c_client.i2c_func_tbl->i2c_write(
+		&a_ctrl->i2c_client, 0x00, lsb,
+		MSM_CAMERA_I2C_BYTE_DATA);
+	if (rc < 0) {
+		pr_err("%s Failed I2C write Line %d\n", __func__,
+			__LINE__);
+		return rc;
+	}
+
+	rc = a_ctrl->i2c_client.i2c_func_tbl->i2c_write(
+		&a_ctrl->i2c_client, 0x01, msb,
+		MSM_CAMERA_I2C_BYTE_DATA);
+	if (rc < 0) {
+		pr_err("%s Failed I2C write Line %d\n", __func__,
+			__LINE__);
+		return rc;
+	}
+
+	usleep_range(1000, 1100);
+
+	rc = a_ctrl->i2c_client.i2c_func_tbl->i2c_write(
+		&a_ctrl->i2c_client, 0x02, 0x00,
+		MSM_CAMERA_I2C_BYTE_DATA);
+	if (rc < 0) {
+		pr_err("%s Failed I2C write Line %d\n", __func__, __LINE__);
+		return rc;
+	}
+	usleep_range(1000, 1100);
+
+	a_ctrl->curr_step_pos = 0;
+	CDBG("%s exit Line %d\n", __func__, __LINE__);
+	return rc;
+}
+
+static int32_t msm_actuator_hall_effect_set_position(
+	struct msm_actuator_ctrl_t *a_ctrl,
+	struct msm_actuator_set_position_t *set_pos)
+{
+	int32_t rc = 0;
+	int32_t index;
+#ifdef CHECK_MERGE
+	uint16_t next_lens_position;
+	uint16_t delay;
+	uint32_t hw_params = 0;
+#endif
+	uint8_t lsb, msb;
+	struct msm_camera_i2c_reg_setting reg_setting;
+	CDBG("%s Enter : steps = %d \n", __func__, set_pos->number_of_steps);
+	if (set_pos->number_of_steps  == 0)
+		return rc;
+
+	/* NULL CHECK */
+	if (a_ctrl->i2c_reg_tbl == NULL) {
+		pr_err("[%s::%d] NULL pointer check fail !\n", __func__, __LINE__);
+		return -EFAULT;
+	}
+
+	a_ctrl->i2c_tbl_index = 0;
+#ifdef CHECK_MERGE
+	for (index = 0; index < set_pos->number_of_steps; index++) {
+		next_lens_position = set_pos->pos[index];
+		delay = set_pos->delay[index];
+		a_ctrl->func_tbl->actuator_parse_i2c_params(a_ctrl,
+		next_lens_position, hw_params, delay);
+
+		reg_setting.reg_setting = a_ctrl->i2c_reg_tbl;
+		reg_setting.size = a_ctrl->i2c_tbl_index;
+		reg_setting.data_type = a_ctrl->i2c_data_type;
+
+		rc = a_ctrl->i2c_client.i2c_func_tbl->
+			i2c_write_table_w_microdelay(
+			&a_ctrl->i2c_client, &reg_setting);
+		if (rc < 0) {
+			pr_err("%s Failed I2C write Line %d\n",
+				__func__, __LINE__);
+			return rc;
+		}
+		a_ctrl->i2c_tbl_index = 0;
+	}
+#endif
+
+	for (index = 0; index < set_pos->number_of_steps; index++) {
+		msb = ((set_pos->pos[index] << 7) & 0x80);
+		lsb = set_pos->pos[index] >> 1;
+		CDBG("%s index=%d msb= 0x%X, lsb=0x%X\n", __func__, index, msb, lsb);
+		a_ctrl->i2c_reg_tbl[a_ctrl->i2c_tbl_index].reg_addr = 0x00;
+		a_ctrl->i2c_reg_tbl[a_ctrl->i2c_tbl_index].reg_data = lsb;
+		a_ctrl->i2c_reg_tbl[a_ctrl->i2c_tbl_index].delay = 0;
+		a_ctrl->i2c_tbl_index++;
+
+		a_ctrl->i2c_reg_tbl[a_ctrl->i2c_tbl_index].reg_addr = 0x01;
+		a_ctrl->i2c_reg_tbl[a_ctrl->i2c_tbl_index].reg_data = msb;
+		a_ctrl->i2c_reg_tbl[a_ctrl->i2c_tbl_index].delay = set_pos->delay[index];
+		a_ctrl->i2c_tbl_index++;
+	}
+
+	reg_setting.reg_setting = a_ctrl->i2c_reg_tbl;
+	reg_setting.size = a_ctrl->i2c_tbl_index;
+	reg_setting.data_type = a_ctrl->i2c_data_type;
+		rc = a_ctrl->i2c_client.i2c_func_tbl->
+			i2c_write_table_w_microdelay(
+			&a_ctrl->i2c_client, &reg_setting);
+	if (rc < 0) {
+		pr_err("%s Failed I2C write Line %d\n", __func__, __LINE__);
+		return rc;
+	}
+
+#if defined(CONFIG_BU24219_OIS)
+	rc = bu24219_ois_shift_calibration(set_pos->pos[0]);
+	if (rc < 0) {
+		pr_err("%s Failed to ois shift calibration %d\n", __func__,
+		__LINE__);
+		rc = 0; // Ignore shift error
+	}
+#endif
+	CDBG("%s exit %d\n", __func__, __LINE__);
 	return rc;
 }
 
@@ -2084,8 +2415,11 @@ static struct platform_driver msm_actuator_platform_driver = {
 
 static int __init msm_actuator_init_module(void)
 {
+	int32_t rc = 0;
 	CDBG("Enter\n");
-	platform_driver_register(&msm_actuator_platform_driver);
+	rc = platform_driver_register(&msm_actuator_platform_driver);
+
+	CDBG("%s:%d rc %d\n", __func__, __LINE__, rc);
 	return i2c_add_driver(&msm_actuator_i2c_driver);
 }
 
@@ -2142,6 +2476,19 @@ static struct msm_actuator msm_bivcm_actuator_table = {
 		.actuator_parse_i2c_params = NULL,
 		.actuator_set_position = msm_actuator_bivcm_set_position,
 		.actuator_park_lens = NULL,
+	},
+};
+
+static struct msm_actuator msm_hall_effect_actuator_table = {
+	.act_type = ACTUATOR_HALL_EFFECT,
+	.func_tbl = {
+		.actuator_init_step_table = msm_actuator_init_step_table,
+		.actuator_move_focus = msm_actuator_hall_effect_move_focus,
+		.actuator_write_focus = NULL,
+		.actuator_set_default_focus = msm_actuator_set_default_focus,
+		.actuator_init_focus = msm_actuator_hall_effect_init_focus,
+		.actuator_parse_i2c_params = msm_actuator_parse_i2c_params,
+		.actuator_set_position = msm_actuator_hall_effect_set_position,
 	},
 };
 

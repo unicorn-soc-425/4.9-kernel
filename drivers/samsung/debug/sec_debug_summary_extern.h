@@ -17,8 +17,7 @@ extern const unsigned long kallsyms_markers[] __weak;
 #ifdef CONFIG_SCHED_WALT
 #include "../../kernel/sched/sched.h"
 extern struct sched_cluster *sched_cluster[NR_CPUS];
-extern int get_num_clusters(void) __weak;
-extern int num_clusters __weak;
+extern int num_clusters;
 #endif
 
 /* kernel/sched/core.c */

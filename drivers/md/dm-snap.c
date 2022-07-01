@@ -19,7 +19,6 @@
 #include <linux/vmalloc.h>
 #include <linux/log2.h>
 #include <linux/dm-kcopyd.h>
-#include <linux/semaphore.h>
 
 #include "dm.h"
 
@@ -64,13 +63,6 @@ struct dm_snapshot {
 	 */
 	int valid;
 
-	/*
-	 * The snapshot overflowed because of a write to the snapshot device.
-	 * We don't have to invalidate the snapshot in this case, but we need
-	 * to prevent further writes.
-	 */
-	int snapshot_overflowed;
-
 	/* Origin writes don't trigger exceptions until this is set */
 	int active;
 
@@ -105,9 +97,6 @@ struct dm_snapshot {
 
 	/* The on disk metadata handler */
 	struct dm_exception_store *store;
-
-	/* Maximum number of in-flight COW jobs. */
-	struct semaphore cow_count;
 
 	struct dm_kcopyd_client *kcopyd_client;
 
@@ -148,19 +137,6 @@ struct dm_snapshot {
  */
 #define RUNNING_MERGE          0
 #define SHUTDOWN_MERGE         1
-
-/*
- * Maximum number of chunks being copied on write.
- *
- * The value was decided experimentally as a trade-off between memory
- * consumption, stalling the kernel's workqueues and maintaining a high enough
- * throughput.
- */
-#define DEFAULT_COW_THRESHOLD 2048
-
-static int cow_threshold = DEFAULT_COW_THRESHOLD;
-module_param_named(snapshot_cow_threshold, cow_threshold, int, 0644);
-MODULE_PARM_DESC(snapshot_cow_threshold, "Maximum number of chunks being copied on write");
 
 DECLARE_DM_KCOPYD_THROTTLE_WITH_MODULE_PARM(snapshot_copy_throttle,
 		"A percentage of time allocated for copy on write");
@@ -224,6 +200,7 @@ struct dm_snap_pending_exception {
 	 */
 	struct bio *full_bio;
 	bio_end_io_t *full_bio_end_io;
+	void *full_bio_private;
 };
 
 /*
@@ -1114,7 +1091,7 @@ static void stop_merge(struct dm_snapshot *s)
 }
 
 /*
- * Construct a snapshot mapping: <origin_dev> <COW-dev> <p|po|n> <chunk-size>
+ * Construct a snapshot mapping: <origin_dev> <COW-dev> <p/n> <chunk-size>
  */
 static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
@@ -1184,7 +1161,6 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	s->ti = ti;
 	s->valid = 1;
-	s->snapshot_overflowed = 0;
 	s->active = 0;
 	atomic_set(&s->pending_exceptions_count, 0);
 	s->exception_start_sequence = 0;
@@ -1205,8 +1181,6 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		r = -ENOMEM;
 		goto bad_hash_tables;
 	}
-
-	sema_init(&s->cow_count, (cow_threshold > 0) ? cow_threshold : INT_MAX);
 
 	s->kcopyd_client = dm_kcopyd_client_create(&dm_kcopyd_throttle);
 	if (IS_ERR(s->kcopyd_client)) {
@@ -1229,7 +1203,7 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	ti->private = s;
 	ti->num_flush_bios = num_flush_bios;
-	ti->per_io_data_size = sizeof(struct dm_snap_tracked_chunk);
+	ti->per_bio_data_size = sizeof(struct dm_snap_tracked_chunk);
 
 	/* Add snapshot to the list of snapshots for this origin */
 	/* Exceptions aren't triggered till snapshot_resume() is called */
@@ -1329,7 +1303,6 @@ static void __handover_exceptions(struct dm_snapshot *snap_src,
 
 	u.store_swap = snap_dest->store;
 	snap_dest->store = snap_src->store;
-	snap_dest->store->userspace_supports_overflow = u.store_swap->userspace_supports_overflow;
 	snap_src->store = u.store_swap;
 
 	snap_dest->store->snap = snap_dest;
@@ -1337,7 +1310,6 @@ static void __handover_exceptions(struct dm_snapshot *snap_src,
 
 	snap_dest->ti->max_io_len = snap_dest->store->chunk_size;
 	snap_dest->valid = snap_src->valid;
-	snap_dest->snapshot_overflowed = snap_src->snapshot_overflowed;
 
 	/*
 	 * Set source invalid to ensure it receives no further I/O.
@@ -1513,8 +1485,11 @@ out:
 	snapshot_bios = bio_list_get(&pe->snapshot_bios);
 	origin_bios = bio_list_get(&pe->origin_bios);
 	full_bio = pe->full_bio;
-	if (full_bio)
+	if (full_bio) {
 		full_bio->bi_end_io = pe->full_bio_end_io;
+		full_bio->bi_private = pe->full_bio_private;
+		atomic_inc(&full_bio->bi_remaining);
+	}
 	increment_pending_exceptions_done_count();
 
 	up_write(&s->lock);
@@ -1526,7 +1501,7 @@ out:
 		error_bios(snapshot_bios);
 	} else {
 		if (full_bio)
-			bio_endio(full_bio);
+			bio_endio(full_bio, 0);
 		flush_bios(snapshot_bios);
 	}
 
@@ -1579,7 +1554,6 @@ static void copy_callback(int read_err, unsigned long write_err, void *context)
 		}
 		list_add(&pe->out_of_order_entry, lh);
 	}
-	up(&s->cow_count);
 }
 
 /*
@@ -1603,15 +1577,14 @@ static void start_copy(struct dm_snap_pending_exception *pe)
 	dest.count = src.count;
 
 	/* Hand over to kcopyd */
-	down(&s->cow_count);
 	dm_kcopyd_copy(s->kcopyd_client, &src, 1, &dest, 0, copy_callback, pe);
 }
 
-static void full_bio_end_io(struct bio *bio)
+static void full_bio_end_io(struct bio *bio, int error)
 {
 	void *callback_data = bio->bi_private;
 
-	dm_kcopyd_do_callback(callback_data, 0, bio->bi_error ? 1 : 0);
+	dm_kcopyd_do_callback(callback_data, 0, error ? 1 : 0);
 }
 
 static void start_full_bio(struct dm_snap_pending_exception *pe,
@@ -1622,8 +1595,8 @@ static void start_full_bio(struct dm_snap_pending_exception *pe,
 
 	pe->full_bio = bio;
 	pe->full_bio_end_io = bio->bi_end_io;
+	pe->full_bio_private = bio->bi_private;
 
-	down(&s->cow_count);
 	callback_data = dm_kcopyd_prepare_callback(s->kcopyd_client,
 						   copy_callback, pe);
 
@@ -1702,7 +1675,7 @@ static int snapshot_map(struct dm_target *ti, struct bio *bio)
 
 	init_tracked_chunk(bio);
 
-	if (bio->bi_opf & REQ_PREFLUSH) {
+	if (bio->bi_rw & REQ_FLUSH) {
 		bio->bi_bdev = s->cow->bdev;
 		return DM_MAPIO_REMAPPED;
 	}
@@ -1718,8 +1691,7 @@ static int snapshot_map(struct dm_target *ti, struct bio *bio)
 	 * to copy an exception */
 	down_write(&s->lock);
 
-	if (!s->valid || (unlikely(s->snapshot_overflowed) &&
-	    bio_data_dir(bio) == WRITE)) {
+	if (!s->valid) {
 		r = -EIO;
 		goto out_unlock;
 	}
@@ -1736,14 +1708,14 @@ static int snapshot_map(struct dm_target *ti, struct bio *bio)
 	 * flags so we should only get this if we are
 	 * writeable.
 	 */
-	if (bio_data_dir(bio) == WRITE) {
+	if (bio_rw(bio) == WRITE) {
 		pe = __lookup_pending_exception(s, chunk);
 		if (!pe) {
 			up_write(&s->lock);
 			pe = alloc_pending_exception(s);
 			down_write(&s->lock);
 
-			if (!s->valid || s->snapshot_overflowed) {
+			if (!s->valid) {
 				free_pending_exception(pe);
 				r = -EIO;
 				goto out_unlock;
@@ -1758,11 +1730,7 @@ static int snapshot_map(struct dm_target *ti, struct bio *bio)
 
 			pe = __find_pending_exception(s, pe, chunk);
 			if (!pe) {
-				if (s->store->userspace_supports_overflow) {
-					s->snapshot_overflowed = 1;
-					DMERR("Snapshot overflowed: Unable to allocate exception.");
-				} else
-					__invalidate_snapshot(s, -ENOMEM);
+				__invalidate_snapshot(s, -ENOMEM);
 				r = -EIO;
 				goto out_unlock;
 			}
@@ -1822,7 +1790,7 @@ static int snapshot_merge_map(struct dm_target *ti, struct bio *bio)
 
 	init_tracked_chunk(bio);
 
-	if (bio->bi_opf & REQ_PREFLUSH) {
+	if (bio->bi_rw & REQ_FLUSH) {
 		if (!dm_bio_get_target_bio_nr(bio))
 			bio->bi_bdev = s->origin->bdev;
 		else
@@ -1842,7 +1810,7 @@ static int snapshot_merge_map(struct dm_target *ti, struct bio *bio)
 	e = dm_lookup_exception(&s->complete, chunk);
 	if (e) {
 		/* Queue writes overlapping with chunks being merged */
-		if (bio_data_dir(bio) == WRITE &&
+		if (bio_rw(bio) == WRITE &&
 		    chunk >= s->first_merging_chunk &&
 		    chunk < (s->first_merging_chunk +
 			     s->num_merging_chunks)) {
@@ -1854,7 +1822,7 @@ static int snapshot_merge_map(struct dm_target *ti, struct bio *bio)
 
 		remap_exception(s, e, bio, chunk);
 
-		if (bio_data_dir(bio) == WRITE)
+		if (bio_rw(bio) == WRITE)
 			track_chunk(s, bio, chunk);
 		goto out_unlock;
 	}
@@ -1862,7 +1830,7 @@ static int snapshot_merge_map(struct dm_target *ti, struct bio *bio)
 redirect_to_origin:
 	bio->bi_bdev = s->origin->bdev;
 
-	if (bio_data_dir(bio) == WRITE) {
+	if (bio_rw(bio) == WRITE) {
 		up_write(&s->lock);
 		return do_origin(s->origin, bio);
 	}
@@ -1944,7 +1912,7 @@ static void snapshot_resume(struct dm_target *ti)
 	up_read(&_origins_lock);
 
 	if (origin_md) {
-		dm_internal_suspend_fast(origin_md);
+		dm_internal_suspend(origin_md);
 		if (snap_merging && test_bit(RUNNING_MERGE, &snap_merging->state_bits)) {
 			must_restart_merging = true;
 			stop_merge(snap_merging);
@@ -1967,7 +1935,7 @@ static void snapshot_resume(struct dm_target *ti)
 	if (origin_md) {
 		if (must_restart_merging)
 			start_merge(snap_merging);
-		dm_internal_resume_fast(origin_md);
+		dm_internal_resume(origin_md);
 		dm_put(origin_md);
 	}
 
@@ -2022,8 +1990,6 @@ static void snapshot_status(struct dm_target *ti, status_type_t type,
 			DMEMIT("Invalid");
 		else if (snap->merge_failed)
 			DMEMIT("Merge failed");
-		else if (snap->snapshot_overflowed)
-			DMEMIT("Overflow");
 		else {
 			if (snap->store->type->usage) {
 				sector_t total_sectors, sectors_allocated,
@@ -2308,10 +2274,10 @@ static int origin_map(struct dm_target *ti, struct bio *bio)
 
 	bio->bi_bdev = o->dev->bdev;
 
-	if (unlikely(bio->bi_opf & REQ_PREFLUSH))
+	if (unlikely(bio->bi_rw & REQ_FLUSH))
 		return DM_MAPIO_REMAPPED;
 
-	if (bio_data_dir(bio) != WRITE)
+	if (bio_rw(bio) != WRITE)
 		return DM_MAPIO_REMAPPED;
 
 	available_sectors = o->split_boundary -
@@ -2322,13 +2288,6 @@ static int origin_map(struct dm_target *ti, struct bio *bio)
 
 	/* Only tell snapshots if this is a write */
 	return do_origin(o->dev, bio);
-}
-
-static long origin_direct_access(struct dm_target *ti, sector_t sector,
-		void **kaddr, pfn_t *pfn, long size)
-{
-	DMWARN("device does not support dax.");
-	return -EIO;
 }
 
 /*
@@ -2371,6 +2330,20 @@ static void origin_status(struct dm_target *ti, status_type_t type,
 	}
 }
 
+static int origin_merge(struct dm_target *ti, struct bvec_merge_data *bvm,
+			struct bio_vec *biovec, int max_size)
+{
+	struct dm_origin *o = ti->private;
+	struct request_queue *q = bdev_get_queue(o->dev->bdev);
+
+	if (!q->merge_bvec_fn)
+		return max_size;
+
+	bvm->bi_bdev = o->dev->bdev;
+
+	return min(max_size, q->merge_bvec_fn(q, bvm, biovec));
+}
+
 static int origin_iterate_devices(struct dm_target *ti,
 				  iterate_devices_callout_fn fn, void *data)
 {
@@ -2389,13 +2362,13 @@ static struct target_type origin_target = {
 	.resume  = origin_resume,
 	.postsuspend = origin_postsuspend,
 	.status  = origin_status,
+	.merge	 = origin_merge,
 	.iterate_devices = origin_iterate_devices,
-	.direct_access = origin_direct_access,
 };
 
 static struct target_type snapshot_target = {
 	.name    = "snapshot",
-	.version = {1, 15, 0},
+	.version = {1, 13, 0},
 	.module  = THIS_MODULE,
 	.ctr     = snapshot_ctr,
 	.dtr     = snapshot_dtr,
@@ -2409,7 +2382,7 @@ static struct target_type snapshot_target = {
 
 static struct target_type merge_target = {
 	.name    = dm_snapshot_merge_target_name,
-	.version = {1, 4, 0},
+	.version = {1, 3, 0},
 	.module  = THIS_MODULE,
 	.ctr     = snapshot_ctr,
 	.dtr     = snapshot_dtr,

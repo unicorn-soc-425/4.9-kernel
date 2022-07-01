@@ -76,7 +76,7 @@ struct esoc_clink {
 	struct platform_device *pdev;
 	unsigned int id;
 	struct module *owner;
-	const struct esoc_clink_ops *clink_ops;
+	const struct esoc_clink_ops const *clink_ops;
 	struct esoc_eng *req_eng;
 	struct esoc_eng *cmd_eng;
 	spinlock_t notify_lock;
@@ -174,6 +174,7 @@ void notify_esoc_clients(struct esoc_clink *esoc_clink, unsigned long evt);
 static inline void notify_esoc_clients(struct esoc_clink *esoc_clink,
 							unsigned long evt)
 {
+	return;
 }
 #endif
 bool esoc_req_eng_enabled(struct esoc_clink *esoc_clink);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -19,8 +19,6 @@
 #include <linux/types.h>
 #include <linux/batterydata-lib.h>
 #include <linux/power_supply.h>
-//Bug 427130 caijiaqi.wt,ADD,20190121,P81081 charger bring up,Add HARDWARE_BATTERY_ID for ATO version.
-#include <linux/hardware_info.h>
 
 static int of_batterydata_read_lut(const struct device_node *np,
 			int max_cols, int max_rows, int *ncols, int *nrows,
@@ -49,8 +47,6 @@ static int of_batterydata_read_lut(const struct device_node *np,
 	for (i = 0; i < cols; i++)
 		*col_legend_data++ = be32_to_cpup(data++);
 
-	rows = 0;
-
 	prop = of_find_property(np, "qcom,lut-row-legend", NULL);
 	if (!prop || row_legend_data == NULL) {
 		/* single row lut */
@@ -61,9 +57,7 @@ static int of_batterydata_read_lut(const struct device_node *np,
 	} else if (prop->length > max_rows * sizeof(int)) {
 		pr_err("%s: Too many rows\n", np->name);
 		return -EINVAL;
-	}
-
-	if (rows != 1) {
+	} else {
 		rows = prop->length/sizeof(int);
 		*nrows = rows;
 		data = prop->value;
@@ -318,14 +312,30 @@ static int64_t of_batterydata_convert_battery_id_kohm(int batt_id_uv,
 
 struct device_node *of_batterydata_get_best_profile(
 		const struct device_node *batterydata_container_node,
-		int batt_id_kohm, const char *batt_type)
+		const char *psy_name,  const char  *batt_type)
 {
 	struct batt_ids batt_ids;
 	struct device_node *node, *best_node = NULL;
+	struct power_supply *psy;
 	const char *battery_type = NULL;
+	union power_supply_propval ret = {0, };
 	int delta = 0, best_delta = 0, best_id_kohm = 0, id_range_pct,
-		i = 0, rc = 0, limit = 0;
+		batt_id_kohm = 0, i = 0, rc = 0, limit = 0;
 	bool in_range = false;
+
+	psy = power_supply_get_by_name(psy_name);
+	if (!psy) {
+		pr_err("%s supply not found. defer\n", psy_name);
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+
+	rc = psy->get_property(psy, POWER_SUPPLY_PROP_RESISTANCE_ID, &ret);
+	if (rc) {
+		pr_err("failed to retrieve resistance value rc=%d\n", rc);
+		return ERR_PTR(-ENOSYS);
+	}
+
+	batt_id_kohm = ret.intval / 1000;
 
 	/* read battery id range percentage for best profile */
 	rc = of_property_read_u32(batterydata_container_node,
@@ -392,12 +402,8 @@ struct device_node *of_batterydata_get_best_profile(
 
 	rc = of_property_read_string(best_node, "qcom,battery-type",
 							&battery_type);
-	//+Bug 427130 caijiaqi.wt,ADD,20190121,P81081 charger bring up,Add HARDWARE_BATTERY_ID for ATO version.
-	if (!rc){
-		printk("%s found\n", battery_type);
-		hardwareinfo_set_prop(HARDWARE_BATTERY_ID, battery_type);
-	}
-	//-Bug 427130 caijiaqi.wt,ADD,20190121,P81081 charger bring up,Add HARDWARE_BATTERY_ID for ATO version.
+	if (!rc)
+		pr_info("%s found\n", battery_type);
 	else
 		pr_info("%s found\n", best_node->name);
 

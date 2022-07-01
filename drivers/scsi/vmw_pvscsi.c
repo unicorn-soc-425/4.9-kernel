@@ -17,7 +17,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Maintained by: Jim Gill <jgill@vmware.com>
+ * Maintained by: Arvind Kumar <arvindkumar@vmware.com>
  *
  */
 
@@ -349,9 +349,9 @@ static void pvscsi_create_sg(struct pvscsi_ctx *ctx,
  * Map all data buffers for a command into PCI space and
  * setup the scatter/gather list if needed.
  */
-static int pvscsi_map_buffers(struct pvscsi_adapter *adapter,
-			      struct pvscsi_ctx *ctx, struct scsi_cmnd *cmd,
-			      struct PVSCSIRingReqDesc *e)
+static void pvscsi_map_buffers(struct pvscsi_adapter *adapter,
+			       struct pvscsi_ctx *ctx, struct scsi_cmnd *cmd,
+			       struct PVSCSIRingReqDesc *e)
 {
 	unsigned count;
 	unsigned bufflen = scsi_bufflen(cmd);
@@ -360,30 +360,18 @@ static int pvscsi_map_buffers(struct pvscsi_adapter *adapter,
 	e->dataLen = bufflen;
 	e->dataAddr = 0;
 	if (bufflen == 0)
-		return 0;
+		return;
 
 	sg = scsi_sglist(cmd);
 	count = scsi_sg_count(cmd);
 	if (count != 0) {
 		int segs = scsi_dma_map(cmd);
-
-		if (segs == -ENOMEM) {
-			scmd_printk(KERN_ERR, cmd,
-				    "vmw_pvscsi: Failed to map cmd sglist for DMA.\n");
-			return -ENOMEM;
-		} else if (segs > 1) {
+		if (segs > 1) {
 			pvscsi_create_sg(ctx, sg, segs);
 
 			e->flags |= PVSCSI_FLAG_CMD_WITH_SG_LIST;
 			ctx->sglPA = pci_map_single(adapter->dev, ctx->sgl,
 						    SGL_SIZE, PCI_DMA_TODEVICE);
-			if (pci_dma_mapping_error(adapter->dev, ctx->sglPA)) {
-				scmd_printk(KERN_ERR, cmd,
-					    "vmw_pvscsi: Failed to map ctx sglist for DMA.\n");
-				scsi_dma_unmap(cmd);
-				ctx->sglPA = 0;
-				return -ENOMEM;
-			}
 			e->dataAddr = ctx->sglPA;
 		} else
 			e->dataAddr = sg_dma_address(sg);
@@ -394,15 +382,8 @@ static int pvscsi_map_buffers(struct pvscsi_adapter *adapter,
 		 */
 		ctx->dataPA = pci_map_single(adapter->dev, sg, bufflen,
 					     cmd->sc_data_direction);
-		if (pci_dma_mapping_error(adapter->dev, ctx->dataPA)) {
-			scmd_printk(KERN_ERR, cmd,
-				    "vmw_pvscsi: Failed to map direct data buffer for DMA.\n");
-			return -ENOMEM;
-		}
 		e->dataAddr = ctx->dataPA;
 	}
-
-	return 0;
 }
 
 static void pvscsi_unmap_buffers(const struct pvscsi_adapter *adapter,
@@ -523,11 +504,33 @@ static void pvscsi_setup_all_rings(const struct pvscsi_adapter *adapter)
 	}
 }
 
-static int pvscsi_change_queue_depth(struct scsi_device *sdev, int qdepth)
+static int pvscsi_change_queue_depth(struct scsi_device *sdev,
+				     int qdepth,
+				     int reason)
 {
+	int max_depth;
+	struct Scsi_Host *shost = sdev->host;
+
+	if (reason != SCSI_QDEPTH_DEFAULT)
+		/*
+		 * We support only changing default.
+		 */
+		return -EOPNOTSUPP;
+
+	max_depth = shost->can_queue;
 	if (!sdev->tagged_supported)
-		qdepth = 1;
-	return scsi_change_queue_depth(sdev, qdepth);
+		max_depth = 1;
+	if (qdepth > max_depth)
+		qdepth = max_depth;
+	scsi_adjust_queue_depth(sdev, scsi_get_tag_type(sdev), qdepth);
+
+	if (sdev->inquiry_len > 7)
+		sdev_printk(KERN_INFO, sdev,
+			    "qdepth(%d), tagged(%d), simple(%d), ordered(%d), scsi_level(%d), cmd_que(%d)\n",
+			    sdev->queue_depth, sdev->tagged_supported,
+			    sdev->simple_tags, sdev->ordered_tags,
+			    sdev->scsi_level, (sdev->inquiry[7] & 2) >> 1);
+	return sdev->queue_depth;
 }
 
 /*
@@ -617,7 +620,7 @@ static void pvscsi_complete_request(struct pvscsi_adapter *adapter,
 			break;
 
 		case BTSTAT_ABORTQUEUE:
-			cmd->result = (DID_ABORT << 16);
+			cmd->result = (DID_BUS_BUSY << 16);
 			break;
 
 		case BTSTAT_SCSIPARITY:
@@ -714,12 +717,6 @@ static int pvscsi_queue_ring(struct pvscsi_adapter *adapter,
 		ctx->sensePA = pci_map_single(adapter->dev, cmd->sense_buffer,
 					      SCSI_SENSE_BUFFERSIZE,
 					      PCI_DMA_FROMDEVICE);
-		if (pci_dma_mapping_error(adapter->dev, ctx->sensePA)) {
-			scmd_printk(KERN_ERR, cmd,
-				    "vmw_pvscsi: Failed to map sense buffer for DMA.\n");
-			ctx->sensePA = 0;
-			return -ENOMEM;
-		}
 		e->senseAddr = ctx->sensePA;
 		e->senseLen = SCSI_SENSE_BUFFERSIZE;
 	} else {
@@ -731,6 +728,10 @@ static int pvscsi_queue_ring(struct pvscsi_adapter *adapter,
 	memcpy(e->cdb, cmd->cmnd, e->cdbLen);
 
 	e->tag = SIMPLE_QUEUE_TAG;
+	if (sdev->tagged_supported &&
+	    (cmd->tag == HEAD_OF_QUEUE_TAG ||
+	     cmd->tag == ORDERED_QUEUE_TAG))
+		e->tag = cmd->tag;
 
 	if (cmd->sc_data_direction == DMA_FROM_DEVICE)
 		e->flags = PVSCSI_FLAG_CMD_DIR_TOHOST;
@@ -741,15 +742,7 @@ static int pvscsi_queue_ring(struct pvscsi_adapter *adapter,
 	else
 		e->flags = 0;
 
-	if (pvscsi_map_buffers(adapter, ctx, cmd, e) != 0) {
-		if (cmd->sense_buffer) {
-			pci_unmap_single(adapter->dev, ctx->sensePA,
-					 SCSI_SENSE_BUFFERSIZE,
-					 PCI_DMA_FROMDEVICE);
-			ctx->sensePA = 0;
-		}
-		return -ENOMEM;
-	}
+	pvscsi_map_buffers(adapter, ctx, cmd, e);
 
 	e->context = pvscsi_map_context(adapter, ctx);
 
@@ -766,7 +759,6 @@ static int pvscsi_queue_lck(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd
 	struct pvscsi_adapter *adapter = shost_priv(host);
 	struct pvscsi_ctx *ctx;
 	unsigned long flags;
-	unsigned char op;
 
 	spin_lock_irqsave(&adapter->hw_lock, flags);
 
@@ -779,14 +771,13 @@ static int pvscsi_queue_lck(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd
 	}
 
 	cmd->scsi_done = done;
-	op = cmd->cmnd[0];
 
 	dev_dbg(&cmd->device->sdev_gendev,
-		"queued cmd %p, ctx %p, op=%x\n", cmd, ctx, op);
+		"queued cmd %p, ctx %p, op=%x\n", cmd, ctx, cmd->cmnd[0]);
 
 	spin_unlock_irqrestore(&adapter->hw_lock, flags);
 
-	pvscsi_kick_io(adapter, op);
+	pvscsi_kick_io(adapter, cmd->cmnd[0]);
 
 	return 0;
 }
@@ -800,7 +791,6 @@ static int pvscsi_abort(struct scsi_cmnd *cmd)
 	unsigned long flags;
 	int result = SUCCESS;
 	DECLARE_COMPLETION_ONSTACK(abort_cmp);
-	int done;
 
 	scmd_printk(KERN_DEBUG, cmd, "task abort on host %u, %p\n",
 		    adapter->host->host_no, cmd);
@@ -832,10 +822,10 @@ static int pvscsi_abort(struct scsi_cmnd *cmd)
 	pvscsi_abort_cmd(adapter, ctx);
 	spin_unlock_irqrestore(&adapter->hw_lock, flags);
 	/* Wait for 2 secs for the completion. */
-	done = wait_for_completion_timeout(&abort_cmp, msecs_to_jiffies(2000));
+	wait_for_completion_timeout(&abort_cmp, msecs_to_jiffies(2000));
 	spin_lock_irqsave(&adapter->hw_lock, flags);
 
-	if (!done) {
+	if (!completion_done(&abort_cmp)) {
 		/*
 		 * Failed to abort the command, unmark the fact that it
 		 * was requested to be aborted.
@@ -1235,6 +1225,8 @@ static void pvscsi_shutdown_intr(struct pvscsi_adapter *adapter)
 
 static void pvscsi_release_resources(struct pvscsi_adapter *adapter)
 {
+	pvscsi_shutdown_intr(adapter);
+
 	if (adapter->workqueue)
 		destroy_workqueue(adapter->workqueue);
 
@@ -1563,7 +1555,6 @@ static int pvscsi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 out_reset_adapter:
 	ll_adapter_reset(adapter);
 out_release_resources:
-	pvscsi_shutdown_intr(adapter);
 	pvscsi_release_resources(adapter);
 	scsi_host_put(host);
 out_disable_device:
@@ -1572,7 +1563,6 @@ out_disable_device:
 	return error;
 
 out_release_resources_and_disable:
-	pvscsi_shutdown_intr(adapter);
 	pvscsi_release_resources(adapter);
 	goto out_disable_device;
 }

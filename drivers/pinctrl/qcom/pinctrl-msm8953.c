@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,12 +25,13 @@
 		.ngroups = ARRAY_SIZE(fname##_groups),	\
 	}
 
+#define REG_BASE 0x0
 #define REG_SIZE 0x1000
 #define PINGROUP(id, f1, f2, f3, f4, f5, f6, f7, f8, f9)	\
 	{					        \
 		.name = "gpio" #id,			\
 		.pins = gpio##id##_pins,		\
-		.npins = (unsigned int)ARRAY_SIZE(gpio##id##_pins),	\
+		.npins = (unsigned)ARRAY_SIZE(gpio##id##_pins),	\
 		.funcs = (int[]){			\
 			msm_mux_gpio, /* gpio mode */	\
 			msm_mux_##f1,			\
@@ -44,11 +45,11 @@
 			msm_mux_##f9			\
 		},				        \
 		.nfuncs = 10,				\
-		.ctl_reg = REG_SIZE * id,			\
-		.io_reg = 0x4 + REG_SIZE * id,		\
-		.intr_cfg_reg = 0x8 + REG_SIZE * id,		\
-		.intr_status_reg = 0xc + REG_SIZE * id,	\
-		.intr_target_reg = 0x8 + REG_SIZE * id,	\
+		.ctl_reg = REG_BASE + REG_SIZE * id,			\
+		.io_reg = REG_BASE + 0x4 + REG_SIZE * id,		\
+		.intr_cfg_reg = REG_BASE + 0x8 + REG_SIZE * id,		\
+		.intr_status_reg = REG_BASE + 0xc + REG_SIZE * id,	\
+		.intr_target_reg = REG_BASE + 0x8 + REG_SIZE * id,	\
 		.mux_bit = 2,			\
 		.pull_bit = 0,			\
 		.drv_bit = 6,			\
@@ -69,7 +70,7 @@
 	{					        \
 		.name = #pg_name,			\
 		.pins = pg_name##_pins,			\
-		.npins = (unsigned int)ARRAY_SIZE(pg_name##_pins),	\
+		.npins = (unsigned)ARRAY_SIZE(pg_name##_pins),	\
 		.ctl_reg = ctl,				\
 		.io_reg = 0,				\
 		.intr_cfg_reg = 0,			\
@@ -409,6 +410,7 @@ static const unsigned int qdsd_data3_pins[] = { 154 };
 enum msm8953_functions {
 	msm_mux_gpio,
 	msm_mux_blsp_spi1,
+	msm_mux_gcc_gp0_clk_a,
 	msm_mux_smb_int,
 	msm_mux_adsp_ext,
 	msm_mux_prng_rosc,
@@ -870,6 +872,9 @@ static const char * const dac_calib7_groups[] = {
 static const char * const accel_int_groups[] = {
 	"gpio42",
 };
+static const char * const gcc_gp0_clk_a_groups[] = {
+	"gpio33",
+};
 static const char * const gcc_gp1_clk_a_groups[] = {
 	"gpio42",
 };
@@ -1244,6 +1249,7 @@ static const char * const tsens_max_groups[] = {
 static const struct msm_function msm8953_functions[] = {
 	FUNCTION(gpio),
 	FUNCTION(blsp_spi1),
+	FUNCTION(gcc_gp0_clk_a),
 	FUNCTION(smb_int),
 	FUNCTION(adsp_ext),
 	FUNCTION(prng_rosc),
@@ -1501,7 +1507,7 @@ static const struct msm_pingroup msm8953_groups[] = {
 		 NA, NA),
 	PINGROUP(31, cci_i2c, NA, NA, NA, qdss_tracedata_a, NA, NA, NA, NA),
 	PINGROUP(32, cci_i2c, NA, NA, NA, qdss_tracedata_a, NA, NA, NA, NA),
-	PINGROUP(33, cci_timer0, NA, NA, NA, NA, qdss_tracedata_a, NA, NA, NA),
+	PINGROUP(33, cci_timer0, gcc_gp0_clk_a, NA, NA, NA, qdss_tracedata_a, NA, NA, NA),
 	PINGROUP(34, cci_timer1, NA, NA, NA, NA, qdss_tracedata_a, NA, NA, NA),
 	PINGROUP(35, cci_timer2, blsp1_spi, pwr_nav_enabled_a, NA, NA, NA,
 		 qdss_tracedata_a, NA, NA),
@@ -1681,6 +1687,6 @@ static void __exit msm8953_pinctrl_exit(void)
 }
 module_exit(msm8953_pinctrl_exit);
 
-MODULE_DESCRIPTION("QTI msm8953 pinctrl driver");
+MODULE_DESCRIPTION("Qualcomm msm8953 pinctrl driver");
 MODULE_LICENSE("GPL v2");
 MODULE_DEVICE_TABLE(of, msm8953_pinctrl_of_match);

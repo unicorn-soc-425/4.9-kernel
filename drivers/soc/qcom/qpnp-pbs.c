@@ -17,7 +17,6 @@
 #include <linux/slab.h>
 #include <linux/spmi.h>
 #include <linux/platform_device.h>
-#include <linux/regmap.h>
 #include <linux/err.h>
 #include <linux/of.h>
 #include <linux/qpnp/qpnp-pbs.h>
@@ -29,14 +28,15 @@
 #define PBS_CLIENT_SCRATCH1		0x50
 #define PBS_CLIENT_SCRATCH2		0x51
 
+#define QPNP_PBS_RETRY_SLEEP		1000
+
 static LIST_HEAD(pbs_dev_list);
 static DEFINE_MUTEX(pbs_list_lock);
 
 struct qpnp_pbs {
-	struct platform_device	*pdev;
 	struct device		*dev;
 	struct device_node	*dev_node;
-	struct regmap		*regmap;
+	struct spmi_device	*spmi;
 	struct mutex		pbs_lock;
 	struct list_head	link;
 
@@ -47,12 +47,11 @@ static int qpnp_pbs_read(struct qpnp_pbs *pbs, u32 address,
 					u8 *val, int count)
 {
 	int rc = 0;
-	struct platform_device *pdev = pbs->pdev;
 
-	rc = regmap_bulk_read(pbs->regmap, address, val, count);
+	rc = spmi_ext_register_readl(pbs->spmi->ctrl, pbs->spmi->sid,
+							address, val, count);
 	if (rc)
-		pr_err("Failed to read address=0x%02x sid=0x%02x rc=%d\n",
-			address, to_spmi_device(pdev->dev.parent)->usid, rc);
+		pr_err("Failed to read address=0x%02x rc=%d\n", address, rc);
 
 	return rc;
 }
@@ -61,12 +60,11 @@ static int qpnp_pbs_write(struct qpnp_pbs *pbs, u16 address,
 					u8 *val, int count)
 {
 	int rc = 0;
-	struct platform_device *pdev = pbs->pdev;
 
-	rc = regmap_bulk_write(pbs->regmap, address, val, count);
+	rc = spmi_ext_register_writel(pbs->spmi->ctrl, pbs->spmi->sid,
+							address, val, count);
 	if (rc < 0)
-		pr_err("Failed to write address =0x%02x sid=0x%02x rc=%d\n",
-			  address, to_spmi_device(pdev->dev.parent)->usid, rc);
+		pr_err("Failed to write address =0x%02x rc=%d\n", address, rc);
 	else
 		pr_debug("Wrote 0x%02X to addr 0x%04x\n", *val, address);
 
@@ -76,15 +74,21 @@ static int qpnp_pbs_write(struct qpnp_pbs *pbs, u16 address,
 static int qpnp_pbs_masked_write(struct qpnp_pbs *pbs, u16 address,
 						   u8 mask, u8 val)
 {
+	u8 reg;
 	int rc;
 
-	rc = regmap_update_bits(pbs->regmap, address, mask, val);
+	rc = qpnp_pbs_read(pbs, address, &reg, 1);
 	if (rc < 0)
-		pr_err("Failed to write address 0x%04X, rc = %d\n",
-					address, rc);
+		return rc;
+
+	reg &= ~mask;
+	reg |= val & mask;
+
+	rc = qpnp_pbs_write(pbs, address, &reg, 1);
+	if (rc < 0)
+		pr_err("Failed to write address 0x%04X, rc= %d\n", address, rc);
 	else
-		pr_debug("Wrote 0x%02X to addr 0x%04X\n",
-			val, address);
+		pr_debug("Wrote 0x%02X to addr 0x%04X\n", val, address);
 
 	return rc;
 }
@@ -108,10 +112,10 @@ static struct qpnp_pbs *get_pbs_client_node(struct device_node *dev_node)
 static int qpnp_pbs_wait_for_ack(struct qpnp_pbs *pbs, u8 bit_pos)
 {
 	int rc = 0;
-	u16 retries = 2000, dly = 1000;
+	u16 retries = 2000;
 	u8 val;
 
-	while (retries--) {
+	while (retries) {
 		rc = qpnp_pbs_read(pbs, pbs->base +
 					PBS_CLIENT_SCRATCH2, &val, 1);
 		if (rc < 0) {
@@ -135,12 +139,12 @@ static int qpnp_pbs_wait_for_ack(struct qpnp_pbs *pbs, u8 bit_pos)
 		}
 
 		if (val & BIT(bit_pos)) {
-			pr_debug("PBS sequence for bit %d executed!\n",
-						 bit_pos);
+			pr_debug("PBS sequence for bit %d executed\n", bit_pos);
 			break;
 		}
 
-		usleep_range(dly, dly + 100);
+		usleep_range(QPNP_PBS_RETRY_SLEEP, QPNP_PBS_RETRY_SLEEP + 100);
+		retries--;
 	}
 
 	if (!retries) {
@@ -279,11 +283,8 @@ int qpnp_pbs_trigger_event(struct device_node *dev_node, u8 bitmap)
 
 error:
 	/* Clear all the requested bitmap */
-	rc = qpnp_pbs_masked_write(pbs, pbs->base + PBS_CLIENT_SCRATCH1,
+	qpnp_pbs_masked_write(pbs, pbs->base + PBS_CLIENT_SCRATCH1,
 						bitmap, 0);
-	if (rc < 0)
-		pr_err("Failed to clear %x reg bit rc=%d\n",
-					PBS_CLIENT_SCRATCH1, rc);
 out:
 	mutex_unlock(&pbs->pbs_lock);
 
@@ -291,37 +292,28 @@ out:
 }
 EXPORT_SYMBOL(qpnp_pbs_trigger_event);
 
-static int qpnp_pbs_probe(struct platform_device *pdev)
+static int qpnp_pbs_probe(struct spmi_device *spmi)
 {
-	int rc = 0;
-	u32 val = 0;
 	struct qpnp_pbs *pbs;
+	struct resource *pbs_resource;
 
-	pbs = devm_kzalloc(&pdev->dev, sizeof(*pbs), GFP_KERNEL);
+	pbs = devm_kzalloc(&spmi->dev, sizeof(*pbs), GFP_KERNEL);
 	if (!pbs)
 		return -ENOMEM;
 
-	pbs->pdev = pdev;
-	pbs->dev = &pdev->dev;
-	pbs->dev_node = pdev->dev.of_node;
-	pbs->regmap = dev_get_regmap(pdev->dev.parent, NULL);
-	if (!pbs->regmap) {
-		dev_err(&pdev->dev, "Couldn't get parent's regmap\n");
+	pbs->dev = &spmi->dev;
+	pbs->dev_node = spmi->dev.of_node;
+	pbs->spmi = spmi;
+	pbs_resource = spmi_get_resource(spmi, 0, IORESOURCE_MEM, 0);
+	if (!pbs_resource) {
+		pr_err("Unable to get PBS base address\n");
 		return -EINVAL;
 	}
+	pbs->base = pbs_resource->start;
 
-	rc = of_property_read_u32(pdev->dev.of_node, "reg", &val);
-	if (rc < 0) {
-		dev_err(&pdev->dev,
-			"Couldn't find reg in node = %s rc = %d\n",
-			pdev->dev.of_node->full_name, rc);
-		return rc;
-	}
-
-	pbs->base = val;
 	mutex_init(&pbs->pbs_lock);
 
-	dev_set_drvdata(&pdev->dev, pbs);
+	dev_set_drvdata(&spmi->dev, pbs);
 
 	mutex_lock(&pbs_list_lock);
 	list_add(&pbs->link, &pbs_dev_list);
@@ -335,7 +327,7 @@ static const struct of_device_id qpnp_pbs_match_table[] = {
 	{}
 };
 
-static struct platform_driver qpnp_pbs_driver = {
+static struct spmi_driver qpnp_pbs_driver = {
 	.driver	= {
 		.name		= QPNP_PBS_DEV_NAME,
 		.owner		= THIS_MODULE,
@@ -346,13 +338,13 @@ static struct platform_driver qpnp_pbs_driver = {
 
 static int __init qpnp_pbs_init(void)
 {
-	return platform_driver_register(&qpnp_pbs_driver);
+	return spmi_driver_register(&qpnp_pbs_driver);
 }
 arch_initcall(qpnp_pbs_init);
 
 static void __exit qpnp_pbs_exit(void)
 {
-	return platform_driver_unregister(&qpnp_pbs_driver);
+	return spmi_driver_unregister(&qpnp_pbs_driver);
 }
 module_exit(qpnp_pbs_exit);
 

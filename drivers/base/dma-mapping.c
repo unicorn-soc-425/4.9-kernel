@@ -12,6 +12,7 @@
 #include <linux/gfp.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#include <asm-generic/dma-coherent.h>
 
 /*
  * Managed DMA API
@@ -61,7 +62,7 @@ static int dmam_match(struct device *dev, void *res, void *match_data)
  * RETURNS:
  * Pointer to allocated memory on success, NULL on failure.
  */
-void *dmam_alloc_coherent(struct device *dev, size_t size,
+void * dmam_alloc_coherent(struct device *dev, size_t size,
 			   dma_addr_t *dma_handle, gfp_t gfp)
 {
 	struct dma_devres *dr;
@@ -166,7 +167,7 @@ void dmam_free_noncoherent(struct device *dev, size_t size, void *vaddr,
 }
 EXPORT_SYMBOL(dmam_free_noncoherent);
 
-#ifdef CONFIG_HAVE_GENERIC_DMA_COHERENT
+#ifdef ARCH_HAS_DMA_DECLARE_COHERENT_MEMORY
 
 static void dmam_coherent_decl_release(struct device *dev, void *res)
 {
@@ -198,13 +199,10 @@ int dmam_declare_coherent_memory(struct device *dev, phys_addr_t phys_addr,
 
 	rc = dma_declare_coherent_memory(dev, phys_addr, device_addr, size,
 					 flags);
-	if (rc) {
+	if (rc == 0)
 		devres_add(dev, res);
-		rc = 0;
-	} else {
+	else
 		devres_free(res);
-		rc = -ENOMEM;
-	}
 
 	return rc;
 }
@@ -249,8 +247,8 @@ int dma_common_mmap(struct device *dev, struct vm_area_struct *vma,
 		    void *cpu_addr, dma_addr_t dma_addr, size_t size)
 {
 	int ret = -ENXIO;
-#if defined(CONFIG_MMU) && !defined(CONFIG_ARCH_NO_COHERENT_DMA_MMAP)
-	unsigned long user_count = vma_pages(vma);
+#ifdef CONFIG_MMU
+	unsigned long user_count = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
 	unsigned long count = PAGE_ALIGN(size) >> PAGE_SHIFT;
 	unsigned long pfn = page_to_pfn(virt_to_page(cpu_addr));
 	unsigned long off = vma->vm_pgoff;
@@ -266,7 +264,7 @@ int dma_common_mmap(struct device *dev, struct vm_area_struct *vma,
 				      user_count << PAGE_SHIFT,
 				      vma->vm_page_prot);
 	}
-#endif	/* CONFIG_MMU && !CONFIG_ARCH_NO_COHERENT_DMA_MMAP */
+#endif	/* CONFIG_MMU */
 
 	return ret;
 }
@@ -306,7 +304,7 @@ void *dma_common_contiguous_remap(struct page *page, size_t size,
 			unsigned long vm_flags,
 			pgprot_t prot, const void *caller)
 {
-	unsigned long i;
+	int i;
 	struct page **pages;
 	void *ptr;
 	unsigned long pfn;
@@ -331,6 +329,8 @@ void *dma_common_contiguous_remap(struct page *page, size_t size,
 }
 
 /*
+	area->pages = pages;
+
  * unmaps a range previously mapped by dma_common_*_remap
  */
 void dma_common_free_remap(void *cpu_addr, size_t size, unsigned long vm_flags,
@@ -344,7 +344,7 @@ void dma_common_free_remap(void *cpu_addr, size_t size, unsigned long vm_flags,
 		return;
 	}
 
-	unmap_kernel_range((unsigned long)cpu_addr, PAGE_ALIGN(size));
+	unmap_kernel_range((unsigned long)cpu_addr, size);
 	vunmap(cpu_addr);
 }
 #endif

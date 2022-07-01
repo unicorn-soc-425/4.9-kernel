@@ -21,12 +21,7 @@
 #include <linux/list_sort.h>
 #include <linux/sec_debug.h>
 
-#include "sec_debug_internal.h"
 #include "sec_key_notifier.h"
-
-#ifdef CONFIG_USER_RESET_DEBUG
-#include <linux/sec_debug_user_reset.h>
-#endif
 
 #ifndef ARRAYSIZE
 #define ARRAYSIZE(a)		(sizeof(a) / sizeof(a[0]))
@@ -79,11 +74,8 @@ static unsigned int check_step;
 
 static void cb_keycrash(void)
 {
-//	emerg_pet_watchdog();
+	emerg_pet_watchdog();
 	dump_stack();
-#ifdef CONFIG_USER_RESET_DEBUG
-	sec_debug_store_extc_idx(false);
-#endif
 	dump_all_task_info();
 	dump_cpu_stat();
 	panic("User Crash Key");

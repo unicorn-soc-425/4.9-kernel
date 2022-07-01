@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -14,8 +14,6 @@
 #include "sde_hwio.h"
 #include "sde_hw_catalog.h"
 #include "sde_hw_cdm.h"
-#include "sde_dbg.h"
-#include "sde_kms.h"
 
 #define CDM_CSC_10_OPMODE                  0x000
 #define CDM_CSC_10_BASE                    0x004
@@ -81,7 +79,6 @@ static struct sde_cdm_cfg *_cdm_offset(enum sde_cdm cdm,
 		if (cdm == m->cdm[i].id) {
 			b->base_off = addr;
 			b->blk_off = m->cdm[i].base;
-			b->length = m->cdm[i].len;
 			b->hwversion = m->hwversion;
 			b->log_mask = SDE_DBG_MASK_CDM;
 			return &m->cdm[i];
@@ -91,12 +88,50 @@ static struct sde_cdm_cfg *_cdm_offset(enum sde_cdm cdm,
 	return ERR_PTR(-EINVAL);
 }
 
-static int sde_hw_cdm_setup_csc_10bit(struct sde_hw_cdm *ctx,
+static void sde_hw_cdm_setup_csc_10bit(struct sde_hw_cdm *ctx,
 		struct sde_csc_cfg *data)
 {
-	sde_hw_csc_setup(&ctx->hw, CDM_CSC_10_MATRIX_COEFF_0, data, true);
+	struct sde_hw_blk_reg_map *c = &ctx->hw;
+	u32 csc_reg_off = CDM_CSC_10_MATRIX_COEFF_0;
+	u32 val;
 
-	return 0;
+	/* matrix coeff */
+	val = data->csc_mv[0] | (data->csc_mv[1] << 16);
+	SDE_REG_WRITE(c, csc_reg_off,  val);
+	val = data->csc_mv[2] | (data->csc_mv[3] << 16);
+	SDE_REG_WRITE(c, csc_reg_off + 0x4, val);
+	val = data->csc_mv[4] | (data->csc_mv[5] << 16);
+	SDE_REG_WRITE(c, csc_reg_off + 0x8, val);
+	val = data->csc_mv[6] | (data->csc_mv[7] << 16);
+	SDE_REG_WRITE(c, csc_reg_off + 0xc, val);
+	val = data->csc_mv[8];
+	SDE_REG_WRITE(c, csc_reg_off + 0x10, val);
+
+	/* Pre clamp */
+	val = (data->csc_pre_lv[0] << 16) | data->csc_pre_lv[1];
+	SDE_REG_WRITE(c, csc_reg_off + 0x14,  val);
+	val = (data->csc_pre_lv[2] << 16) | data->csc_pre_lv[3];
+	SDE_REG_WRITE(c, csc_reg_off  + 0x18, val);
+	val = (data->csc_pre_lv[4] << 16) | data->csc_pre_lv[5];
+	SDE_REG_WRITE(c, csc_reg_off  + 0x1c, val);
+
+	/* Post clamp */
+	val = (data->csc_post_lv[0] << 16) | data->csc_post_lv[1];
+	SDE_REG_WRITE(c, csc_reg_off + 0x20,  val);
+	val = (data->csc_post_lv[2] << 16) | data->csc_post_lv[3];
+	SDE_REG_WRITE(c, csc_reg_off  + 0x24, val);
+	val = (data->csc_post_lv[4] << 16) | data->csc_post_lv[5];
+	SDE_REG_WRITE(c, csc_reg_off  + 0x28, val);
+
+	/* Pre-Bias */
+	SDE_REG_WRITE(c, csc_reg_off + 0x2c,  data->csc_pre_bv[0]);
+	SDE_REG_WRITE(c, csc_reg_off + 0x30, data->csc_pre_bv[1]);
+	SDE_REG_WRITE(c, csc_reg_off + 0x34, data->csc_pre_bv[2]);
+
+	/* Post-Bias */
+	SDE_REG_WRITE(c, csc_reg_off + 0x38,  data->csc_post_bv[0]);
+	SDE_REG_WRITE(c, csc_reg_off + 0x3c, data->csc_post_bv[1]);
+	SDE_REG_WRITE(c, csc_reg_off + 0x40, data->csc_post_bv[2]);
 }
 
 static int sde_hw_cdm_setup_cdwn(struct sde_hw_cdm *ctx,
@@ -269,11 +304,6 @@ static void _setup_cdm_ops(struct sde_hw_cdm_ops *ops,
 	ops->disable = sde_hw_cdm_disable;
 }
 
-static struct sde_hw_blk_ops sde_hw_ops = {
-	.start = NULL,
-	.stop = NULL,
-};
-
 struct sde_hw_cdm *sde_hw_cdm_init(enum sde_cdm idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m,
@@ -281,7 +311,6 @@ struct sde_hw_cdm *sde_hw_cdm_init(enum sde_cdm idx,
 {
 	struct sde_hw_cdm *c;
 	struct sde_cdm_cfg *cfg;
-	int rc;
 
 	c = kzalloc(sizeof(*c), GFP_KERNEL);
 	if (!c)
@@ -294,18 +323,9 @@ struct sde_hw_cdm *sde_hw_cdm_init(enum sde_cdm idx,
 	}
 
 	c->idx = idx;
-	c->caps = cfg;
-	_setup_cdm_ops(&c->ops, c->caps->features);
+	c->cdm_hw_cap = cfg;
+	_setup_cdm_ops(&c->ops, c->cdm_hw_cap->features);
 	c->hw_mdp = hw_mdp;
-
-	rc = sde_hw_blk_init(&c->base, SDE_HW_BLK_CDM, idx, &sde_hw_ops);
-	if (rc) {
-		SDE_ERROR("failed to init hw blk %d\n", rc);
-		goto blk_init_error;
-	}
-
-	sde_dbg_reg_register_dump_range(SDE_DBG_NAME, cfg->name, c->hw.blk_off,
-			c->hw.blk_off + c->hw.length, c->hw.xin_id);
 
 	/*
 	 * Perform any default initialization for the chroma down module
@@ -314,16 +334,9 @@ struct sde_hw_cdm *sde_hw_cdm_init(enum sde_cdm idx,
 	sde_hw_cdm_setup_csc_10bit(c, &rgb2yuv_cfg);
 
 	return c;
-
-blk_init_error:
-	kzfree(c);
-
-	return ERR_PTR(rc);
 }
 
 void sde_hw_cdm_destroy(struct sde_hw_cdm *cdm)
 {
-	if (cdm)
-		sde_hw_blk_destroy(&cdm->base);
 	kfree(cdm);
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -198,7 +198,7 @@ int ipa2_deregister_intf(const char *name)
 
 	mutex_lock(&ipa_ctx->lock);
 	list_for_each_entry_safe(entry, next, &ipa_ctx->intf_list, link) {
-		if (!strcmp(entry->name, name)) {
+		if (!strncmp(entry->name, name, IPA_RESOURCE_NAME_MAX)) {
 			list_del(&entry->link);
 			kfree(entry->ext);
 			kfree(entry->rx);
@@ -235,9 +235,9 @@ int ipa_query_intf(struct ipa_ioc_query_intf *lookup)
 	}
 
 	mutex_lock(&ipa_ctx->lock);
-	lookup->name[IPA_RESOURCE_NAME_MAX-1] = '\0';
 	list_for_each_entry(entry, &ipa_ctx->intf_list, link) {
-		if (!strcmp(entry->name, lookup->name)) {
+		if (!strncmp(entry->name, lookup->name,
+					IPA_RESOURCE_NAME_MAX)) {
 			lookup->num_tx_props = entry->num_tx_props;
 			lookup->num_rx_props = entry->num_rx_props;
 			lookup->num_ext_props = entry->num_ext_props;
@@ -271,12 +271,11 @@ int ipa_query_intf_tx_props(struct ipa_ioc_query_intf_tx_props *tx)
 	}
 
 	mutex_lock(&ipa_ctx->lock);
-	tx->name[IPA_RESOURCE_NAME_MAX-1] = '\0';
 	list_for_each_entry(entry, &ipa_ctx->intf_list, link) {
-		if (!strcmp(entry->name, tx->name)) {
+		if (!strncmp(entry->name, tx->name, IPA_RESOURCE_NAME_MAX)) {
 			/* add the entry check */
 			if (entry->num_tx_props != tx->num_tx_props) {
-				IPAERR("invalid entry number(%u %u)\n",
+				IPAERR_RL("invalid entry number(%u %u)\n",
 					entry->num_tx_props,
 						tx->num_tx_props);
 				mutex_unlock(&ipa_ctx->lock);
@@ -313,12 +312,11 @@ int ipa_query_intf_rx_props(struct ipa_ioc_query_intf_rx_props *rx)
 	}
 
 	mutex_lock(&ipa_ctx->lock);
-	rx->name[IPA_RESOURCE_NAME_MAX-1] = '\0';
 	list_for_each_entry(entry, &ipa_ctx->intf_list, link) {
-		if (!strcmp(entry->name, rx->name)) {
+		if (!strncmp(entry->name, rx->name, IPA_RESOURCE_NAME_MAX)) {
 			/* add the entry check */
 			if (entry->num_rx_props != rx->num_rx_props) {
-				IPAERR("invalid entry number(%u %u)\n",
+				IPAERR_RL("invalid entry number(%u %u)\n",
 					entry->num_rx_props,
 						rx->num_rx_props);
 				mutex_unlock(&ipa_ctx->lock);
@@ -359,7 +357,7 @@ int ipa_query_intf_ext_props(struct ipa_ioc_query_intf_ext_props *ext)
 		if (!strcmp(entry->name, ext->name)) {
 			/* add the entry check */
 			if (entry->num_ext_props != ext->num_ext_props) {
-				IPAERR("invalid entry number(%u %u)\n",
+				IPAERR_RL("invalid entry number(%u %u)\n",
 					entry->num_ext_props,
 						ext->num_ext_props);
 				mutex_unlock(&ipa_ctx->lock);
@@ -744,7 +742,7 @@ ssize_t ipa_read(struct file *filp, char __user *buf, size_t count,
 				break;
 			}
 			if (copy_to_user(buf, &msg->meta,
-					sizeof(struct ipa_msg_meta))) {
+					  sizeof(struct ipa_msg_meta))) {
 				kfree(msg);
 				msg = NULL;
 				ret = -EFAULT;

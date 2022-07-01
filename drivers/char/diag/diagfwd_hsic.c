@@ -79,6 +79,7 @@ static void diag_hsic_read_complete(void *ctxt, char *buf, int len,
 fail:
 	diagmem_free(driver, buf, ch->mempool);
 	queue_work(ch->hsic_wq, &ch->read_work);
+	return;
 }
 
 static void diag_hsic_write_complete(void *ctxt, char *buf, int len,
@@ -95,6 +96,7 @@ static void diag_hsic_write_complete(void *ctxt, char *buf, int len,
 
 	ch = &diag_hsic[index];
 	diag_remote_dev_write_done(ch->dev_id, buf, actual_size, ch->id);
+	return;
 }
 
 static int diag_hsic_suspend(void *ctxt)
@@ -256,7 +258,7 @@ static void hsic_read_work_fn(struct work_struct *work)
 		}
 	} while (buf);
 
-	/* Read from the HSIC channel continuously if the channel is present */
+	/* Read from the HSIC channel continously if the channel is present */
 	if (!err)
 		queue_work(ch->hsic_wq, &ch->read_work);
 }
@@ -394,7 +396,7 @@ static struct diag_remote_dev_ops diag_hsic_fwd_ops = {
 	.fwd_complete = hsic_fwd_complete,
 };
 
-int diag_hsic_init(void)
+int diag_hsic_init()
 {
 	int i;
 	int err = 0;
@@ -433,7 +435,7 @@ fail:
 	return -ENOMEM;
 }
 
-void diag_hsic_exit(void)
+void diag_hsic_exit()
 {
 	int i;
 	struct diag_hsic_info *ch = NULL;

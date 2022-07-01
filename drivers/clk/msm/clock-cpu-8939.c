@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2016, 2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -46,7 +46,7 @@ enum {
 	A53SS_MUX_NUM,
 };
 
-static const char * const mux_names[] = { "c1", "c0", "cci"};
+const char *mux_names[] = { "c1", "c0", "cci"};
 
 struct cpu_clk_8939 {
 	u32 cpu_reg_mask;
@@ -130,71 +130,8 @@ static enum handoff cpu_clk_8939_handoff(struct clk *c)
 
 static long cpu_clk_8939_round_rate(struct clk *c, unsigned long rate)
 {
-	int level;
-
-	for (level = 0; level < c->num_fmax; level++)
-		if (rate <= c->fmax[level])
-			break;
-
-	if (level == c->num_fmax)
-		return c->fmax[level-1];
-
-	return c->fmax[level];
+	return clk_round_rate(c->parent, rate);
 }
-
-#ifdef CONFIG_SEC_DEBUG_APPS_CLK_LOGGING
-typedef struct {
-	uint64_t ktime;
-	uint64_t qtime;
-	uint64_t rate;
-} apps_clk_log_t;
-
-#define MAX_CLK_LOG_CNT (10)
-
-typedef struct {
-	uint32_t max_cnt;
-	uint32_t index;
-	apps_clk_log_t log[MAX_CLK_LOG_CNT];
-} cpuclk_log_t;
-
-cpuclk_log_t cpuclk_log[2] = {
-	[0] = {.max_cnt = MAX_CLK_LOG_CNT,},
-	[1] = {.max_cnt = MAX_CLK_LOG_CNT,},
-};
-
-static void clk_osm_add_log(struct clk *cpuclk, unsigned long rate)
-{
-	cpuclk_log_t *clk = NULL;
-	apps_clk_log_t *log = NULL;
-	uint64_t idx = 0;
-
-	if (!strncmp(cpuclk->dbg_name, "a53_bc_clk", 10)) {
-		clk = &cpuclk_log[0];
-		idx = clk->index;
-		log = &clk->log[idx];
-		log->ktime = local_clock();
-		log->qtime = arch_counter_get_cntvct();
-		log->rate = rate;
-		clk->index = (clk->index + 1) % MAX_CLK_LOG_CNT;
-	}
-
-	if (!strncmp(cpuclk->dbg_name, "cci_clk", 7)) {
-		clk = &cpuclk_log[1];
-		idx = clk->index;
-		log = &clk->log[idx];
-		log->ktime = local_clock();
-		log->qtime = arch_counter_get_cntvct();
-		log->rate = rate;
-		clk->index = (clk->index + 1) % MAX_CLK_LOG_CNT;
-	}
-}
-
-void* clk_osm_get_log_addr(void)
-{
-	return (void *)&cpuclk_log;
-}
-EXPORT_SYMBOL(clk_osm_get_log_addr);
-#endif /* CONFIG_SEC_DEBUG_APPS_CLK_LOGGING */
 
 static int cpu_clk_8939_set_rate(struct clk *c, unsigned long rate)
 {
@@ -214,10 +151,6 @@ static int cpu_clk_8939_set_rate(struct clk *c, unsigned long rate)
 	}
 
 	ret = clk_set_rate(c->parent, rate);
-#ifdef CONFIG_SEC_DEBUG_APPS_CLK_LOGGING
-//	pr_info("%s [%s:%ld]\n", __func__, c->dbg_name, rate);
-	clk_osm_add_log(c, rate);
-#endif /* CONFIG_SEC_DEBUG_APPS_CLK_LOGGING */
 
 	if (hw_low_power_ctrl)
 		pm_qos_remove_request(&cpuclk->req);
@@ -289,12 +222,6 @@ static struct clk_lookup cpu_clocks_8939_single_cluster[] = {
 	CLK_LIST(a53_bc_clk),
 };
 
-static struct clk_lookup cpu_clocks_sdm429[] = {
-	CLK_LIST(a53ssmux_bc),
-	CLK_LIST(a53ssmux_cci),
-	CLK_LIST(a53_bc_clk),
-	CLK_LIST(cci_clk),
-};
 
 static struct mux_div_clk *a53ssmux[] = {&a53ssmux_bc,
 						&a53ssmux_lc, &a53ssmux_cci};
@@ -303,31 +230,19 @@ static struct cpu_clk_8939 *cpuclk[] = { &a53_bc_clk, &a53_lc_clk, &cci_clk};
 
 static struct clk *logical_cpu_to_clk(int cpu)
 {
-	struct device_node *cpu_node;
-	const u32 *cell;
-	u64 hwid;
+	struct device_node *cpu_node = of_get_cpu_node(cpu, NULL);
+	u32 reg;
 
-	cpu_node = of_get_cpu_node(cpu, NULL);
-	if (!cpu_node)
-		goto fail;
-
-	cell = of_get_property(cpu_node, "reg", NULL);
-	if (!cell) {
-		pr_err("%s: missing reg property\n", cpu_node->full_name);
-		goto fail;
-	}
-
-	/*
-	 * CPU 0/1/2/3 --> a53_bc_clk and mask = 0x103
+	/* CPU 0/1/2/3 --> a53_bc_clk and mask = 0x103
 	 * CPU 4/5/6/7 --> a53_lc_clk and mask = 0x3
 	 */
-	hwid = of_read_number(cell, of_n_addr_cells(cpu_node));
-	if ((hwid | a53_bc_clk.cpu_reg_mask) == a53_bc_clk.cpu_reg_mask)
-		return &a53_lc_clk.c;
-	if ((hwid | a53_lc_clk.cpu_reg_mask) == a53_lc_clk.cpu_reg_mask)
-		return &a53_bc_clk.c;
+	if (cpu_node && !of_property_read_u32(cpu_node, "reg", &reg)) {
+		if ((reg | a53_bc_clk.cpu_reg_mask) == a53_bc_clk.cpu_reg_mask)
+			return &a53_lc_clk.c;
+		if ((reg | a53_lc_clk.cpu_reg_mask) == a53_lc_clk.cpu_reg_mask)
+			return &a53_bc_clk.c;
+	}
 
-fail:
 	return NULL;
 }
 
@@ -475,7 +390,7 @@ static int of_get_clk_src(struct platform_device *pdev,
 		snprintf(clk_name, ARRAY_SIZE(clk_name), "clk-%s-%d",
 							mux_names[mux_id], i);
 		index = of_property_match_string(of, "clock-names", clk_name);
-		if (index < 0)
+		if (IS_ERR_VALUE(index))
 			continue;
 
 		parents[j].sel = i;
@@ -525,7 +440,7 @@ static int cpu_parse_devicetree(struct platform_device *pdev, int mux_id)
 	cpuclk[mux_id]->c.vdd_class->regulator[0] = regulator;
 
 	rc = of_get_clk_src(pdev, a53ssmux[mux_id]->parents, mux_id);
-	if (rc < 0)
+	if (IS_ERR_VALUE(rc))
 		return rc;
 
 	a53ssmux[mux_id]->num_parents = rc;
@@ -561,11 +476,6 @@ static int add_opp(struct clk *c, struct device *cpudev, struct device *vregdev,
 	bool use_voltages = false;
 	struct dev_pm_opp *oppl;
 	int j = 1;
-
-	if (!cpudev) {
-		pr_warn("clock-cpu: NULL CPU device\n");
-		return -ENODEV;
-	}
 
 	rcu_read_lock();
 	/* Check if the regulator driver has already populated OPP tables */
@@ -630,7 +540,6 @@ static void print_opp_table(int a53_c0_cpu, int a53_c1_cpu, bool single_cluster)
 {
 	struct dev_pm_opp *oppfmax, *oppfmin;
 	unsigned long apc0_fmax, apc1_fmax, apc0_fmin, apc1_fmin;
-
 	if (!single_cluster) {
 		apc0_fmax = a53_lc_clk.c.fmax[a53_lc_clk.c.num_fmax - 1];
 		apc0_fmin = a53_lc_clk.c.fmax[1];
@@ -645,10 +554,10 @@ static void print_opp_table(int a53_c0_cpu, int a53_c1_cpu, bool single_cluster)
 		oppfmin = dev_pm_opp_find_freq_exact(get_cpu_device(a53_c0_cpu),
 						apc0_fmin, true);
 		/*
-		 * One time information during boot. Important to know that this
-		 * looks sane since it can eventually make its way to the
-		 * scheduler.
-		 */
+		* One time information during boot. Important to know that this
+		* looks sane since it can eventually make its way to the
+		* scheduler.
+		*/
 		pr_info("clock_cpu: a53_c0: OPP voltage for %lu: %ld\n",
 			apc0_fmin, dev_pm_opp_get_voltage(oppfmin));
 		pr_info("clock_cpu: a53_c0: OPP voltage for %lu: %ld\n",
@@ -668,9 +577,9 @@ static void print_opp_table(int a53_c0_cpu, int a53_c1_cpu, bool single_cluster)
 static void populate_opp_table(struct platform_device *pdev,
 					bool single_cluster)
 {
-	struct platform_device *apc0_dev = 0, *apc1_dev;
+	struct platform_device *apc0_dev, *apc1_dev;
 	struct device_node *apc0_node = NULL, *apc1_node;
-	unsigned long apc0_fmax = 0, apc1_fmax = 0;
+	unsigned long apc0_fmax, apc1_fmax;
 	int cpu, a53_c0_cpu = 0, a53_c1_cpu = 0;
 
 	if (!single_cluster)
@@ -740,6 +649,7 @@ static void config_pll(int mux_id)
 	clk_set_rate(main_pll, clk_round_rate(main_pll, 1));
 	clk_set_rate(&a53ssmux[mux_id]->c, rate);
 
+	return;
 }
 
 static int clock_8939_pm_event(struct notifier_block *this,
@@ -755,26 +665,6 @@ static int clock_8939_pm_event(struct notifier_block *this,
 	case PM_HIBERNATION_PREPARE:
 	case PM_SUSPEND_PREPARE:
 		clk_prepare(&a53_lc_clk.c);
-		clk_prepare(&a53_bc_clk.c);
-		clk_prepare(&cci_clk.c);
-		break;
-	default:
-		break;
-	}
-	return NOTIFY_DONE;
-}
-
-static int clock_sdm429_pm_event(struct notifier_block *this,
-				unsigned long event, void *ptr)
-{
-	switch (event) {
-	case PM_POST_HIBERNATION:
-	case PM_POST_SUSPEND:
-		clk_unprepare(&a53_bc_clk.c);
-		clk_unprepare(&cci_clk.c);
-		break;
-	case PM_HIBERNATION_PREPARE:
-	case PM_SUSPEND_PREPARE:
 		clk_prepare(&a53_bc_clk.c);
 		clk_prepare(&cci_clk.c);
 		break;
@@ -804,10 +694,6 @@ static int clock_8939_pm_event_single_cluster(struct notifier_block *this,
 
 static struct notifier_block clock_8939_pm_notifier = {
 	.notifier_call = clock_8939_pm_event,
-};
-
-static struct notifier_block clock_sdm429_pm_notifier = {
-	.notifier_call = clock_sdm429_pm_event,
 };
 
 static struct notifier_block clock_8939_pm_notifier_single_cluster = {
@@ -859,13 +745,9 @@ static int clock_a53_probe(struct platform_device *pdev)
 	char prop_name[] = "qcom,speedX-bin-vX-XXX";
 	int mux_num;
 	bool single_cluster;
-	bool is_sdm429 = false;
 
 	single_cluster = of_property_read_bool(pdev->dev.of_node,
 						"qcom,num-cluster");
-
-	is_sdm429 = of_device_is_compatible(pdev->dev.of_node,
-						"qcom,cpu-clock-sdm429");
 
 	get_speed_bin(pdev, &speed_bin, &version);
 
@@ -899,35 +781,11 @@ static int clock_a53_probe(struct platform_device *pdev)
 			dev_info(&pdev->dev, "Safe voltage plan loaded.\n");
 		}
 	}
-
-	if (is_sdm429) {
-		rc = cpu_parse_devicetree(pdev, A53SS_MUX_CCI);
-		if (rc)
-			return rc;
-
-		snprintf(prop_name, ARRAY_SIZE(prop_name),
-				"qcom,speed%d-bin-v%d-%s",
-				speed_bin, version, mux_names[A53SS_MUX_CCI]);
-
-		rc = of_get_fmax_vdd_class(pdev, &cpuclk[A53SS_MUX_CCI]->c,
-								prop_name);
-		if (rc) {
-			dev_err(&pdev->dev, "Unable to load voltage plan %s!\n",
-								prop_name);
-			return rc;
-		}
-	}
-
-	if (single_cluster) {
-		if (is_sdm429)
-			rc = of_msm_clock_register(pdev->dev.of_node,
-					cpu_clocks_sdm429,
-					ARRAY_SIZE(cpu_clocks_sdm429));
-		else
-			rc = of_msm_clock_register(pdev->dev.of_node,
+	if (single_cluster)
+		rc = of_msm_clock_register(pdev->dev.of_node,
 				cpu_clocks_8939_single_cluster,
 				ARRAY_SIZE(cpu_clocks_8939_single_cluster));
-	} else
+	else
 		rc = of_msm_clock_register(pdev->dev.of_node,
 				cpu_clocks_8939, ARRAY_SIZE(cpu_clocks_8939));
 
@@ -936,7 +794,7 @@ static int clock_a53_probe(struct platform_device *pdev)
 		return rc;
 	}
 
-	if (!single_cluster || is_sdm429) {
+	if (!single_cluster) {
 		rate = clk_get_rate(&cci_clk.c);
 		clk_set_rate(&cci_clk.c, rate);
 	}
@@ -957,7 +815,7 @@ static int clock_a53_probe(struct platform_device *pdev)
 	for_each_online_cpu(cpu) {
 		WARN(clk_prepare_enable(&cpuclk[cpu/4]->c),
 				"Unable to turn on CPU clock");
-		if (!single_cluster || is_sdm429)
+		if (!single_cluster)
 			clk_prepare_enable(&cci_clk.c);
 	}
 	put_online_cpus();
@@ -972,13 +830,9 @@ static int clock_a53_probe(struct platform_device *pdev)
 	a53_lc_clk.hw_low_power_ctrl = true;
 	a53_bc_clk.hw_low_power_ctrl = true;
 
-	if (single_cluster) {
-		if (is_sdm429)
-			register_pm_notifier(&clock_sdm429_pm_notifier);
-		else
-			register_pm_notifier(
-				&clock_8939_pm_notifier_single_cluster);
-	} else
+	if (single_cluster)
+		register_pm_notifier(&clock_8939_pm_notifier_single_cluster);
+	else
 		register_pm_notifier(&clock_8939_pm_notifier);
 
 	populate_opp_table(pdev, single_cluster);
@@ -989,11 +843,9 @@ static int clock_a53_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id clock_a53_match_table[] = {
+static struct of_device_id clock_a53_match_table[] = {
 	{.compatible = "qcom,cpu-clock-8939"},
 	{.compatible = "qcom,cpu-clock-8917"},
-	{.compatible = "qcom,cpu-clock-sdm429"},
-	{.compatible = "qcom,cpu-clock-sdm439"},
 	{}
 };
 
@@ -1021,15 +873,8 @@ static int __init clock_cpu_lpm_get_latency(void)
 
 	if (!ofnode)
 		ofnode = of_find_compatible_node(NULL, NULL,
-					"qcom,cpu-clock-8917");
+					"qcom,cpu-clock-gold");
 
-	if (!ofnode)
-		ofnode = of_find_compatible_node(NULL, NULL,
-					"qcom,cpu-clock-sdm439");
-
-	if (!ofnode)
-		ofnode = of_find_compatible_node(NULL, NULL,
-					"qcom,cpu-clock-sdm429");
 	if (!ofnode)
 		return 0;
 
@@ -1057,7 +902,7 @@ static int __init clock_cpu_lpm_get_latency(void)
 
 	return rc;
 }
-late_initcall_sync(clock_cpu_lpm_get_latency);
+late_initcall(clock_cpu_lpm_get_latency);
 
 #define APCS_C0_PLL			0xb116000
 #define C0_PLL_MODE			0x0
@@ -1073,7 +918,7 @@ late_initcall_sync(clock_cpu_lpm_get_latency);
 #define SRC_SEL				0x4
 #define SRC_DIV				0x3
 
-static void __init configure_enable_sr2_pll(void __iomem *base, bool is_sdm439)
+static void __init configure_enable_sr2_pll(void __iomem *base)
 {
 	/* Disable Mode */
 	writel_relaxed(0x0, base + C0_PLL_MODE);
@@ -1085,11 +930,7 @@ static void __init configure_enable_sr2_pll(void __iomem *base, bool is_sdm439)
 
 	/* Configure USER_CTL and CONFIG_CTL value */
 	writel_relaxed(0x0100000f, base + C0_PLL_USER_CTL);
-
-	if (is_sdm439)
-		writel_relaxed(0x44024665, base + C0_PLL_CONFIG_CTL);
-	else
-		writel_relaxed(0x4c015765, base + C0_PLL_CONFIG_CTL);
+	writel_relaxed(0x4c015765, base + C0_PLL_CONFIG_CTL);
 
 	/* Enable PLL now */
 	writel_relaxed(0x2, base + C0_PLL_MODE);
@@ -1097,9 +938,6 @@ static void __init configure_enable_sr2_pll(void __iomem *base, bool is_sdm439)
 	writel_relaxed(0x6, base + C0_PLL_MODE);
 	udelay(50);
 	writel_relaxed(0x7, base + C0_PLL_MODE);
-	/* Ensure that the writes go through before enabling
-	 * PLL
-	 */
 	mb();
 }
 
@@ -1107,21 +945,13 @@ static int __init cpu_clock_a53_init_little(void)
 {
 	void __iomem  *base;
 	int regval = 0, count;
-	bool is_sdm439 = false;
 	struct device_node *ofnode = of_find_compatible_node(NULL, NULL,
 							"qcom,cpu-clock-8939");
-
-	if (!ofnode)
-		ofnode = of_find_compatible_node(NULL, NULL,
-						"qcom,cpu-clock-sdm439");
-
 	if (!ofnode)
 		return 0;
 
-	is_sdm439 = of_device_is_compatible(ofnode, "qcom,cpu-clock-sdm439");
-
 	base = ioremap_nocache(APCS_C0_PLL, SZ_32);
-	configure_enable_sr2_pll(base, is_sdm439);
+	configure_enable_sr2_pll(base);
 	iounmap(base);
 
 	base = ioremap_nocache(APCS_ALIAS0_CMD_RCGR, SZ_8);
@@ -1129,7 +959,6 @@ static int __init cpu_clock_a53_init_little(void)
 	/* Source GPLL0 and 1/2 the rate of GPLL0 */
 	regval = (SRC_SEL << 8) | SRC_DIV; /* 0x403 */
 	writel_relaxed(regval, base + APCS_ALIAS0_CFG_OFF);
-	/* Make sure src sel and src div is set before update bit */
 	mb();
 
 	/* update bit */
@@ -1148,7 +977,6 @@ static int __init cpu_clock_a53_init_little(void)
 	regval =  readl_relaxed(base + APCS_ALIAS0_CORE_CBCR_OFF);
 	regval |= BIT(0);
 	writel_relaxed(regval, base + APCS_ALIAS0_CORE_CBCR_OFF);
-	/* Branch enable should be complete */
 	mb();
 	iounmap(base);
 

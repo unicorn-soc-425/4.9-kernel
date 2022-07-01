@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014-2015, 2017-2018, The Linux Foundation.
- * All rights reserved.
+ * Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -35,7 +34,6 @@ struct dev_data {
 	struct clk *clk;
 	struct devfreq *df;
 	struct devfreq_dev_profile profile;
-	bool freq_in_khz;
 };
 
 static void find_freq(struct devfreq_dev_profile *p, unsigned long *freq,
@@ -67,7 +65,7 @@ static int dev_target(struct device *dev, unsigned long *freq, u32 flags)
 
 	find_freq(&d->profile, freq, flags);
 
-	rfreq = clk_round_rate(d->clk, d->freq_in_khz ? *freq * 1000 : *freq);
+	rfreq = clk_round_rate(d->clk, *freq * 1000);
 	if (IS_ERR_VALUE(rfreq)) {
 		dev_err(dev, "devfreq: Cannot find matching frequency for %lu\n",
 			*freq);
@@ -85,30 +83,39 @@ static int dev_get_cur_freq(struct device *dev, unsigned long *freq)
 	f = clk_get_rate(d->clk);
 	if (IS_ERR_VALUE(f))
 		return f;
-	*freq = d->freq_in_khz ? f / 1000 : f;
+	*freq = f / 1000;
 	return 0;
 }
 
 #define PROP_TBL "freq-tbl-khz"
-static int parse_freq_table(struct device *dev, struct dev_data *d)
+static int devfreq_clock_probe(struct platform_device *pdev)
 {
-	struct devfreq_dev_profile *p = &d->profile;
+	struct device *dev = &pdev->dev;
+	struct dev_data *d;
+	struct devfreq_dev_profile *p;
+	u32 *data, poll;
+	const char *gov_name;
 	int ret, len, i, j;
-	u32 *data;
 	unsigned long f;
 
-	if (!of_find_property(dev->of_node, PROP_TBL, &len)) {
-		if (dev_pm_opp_get_opp_count(dev) <= 0)
-			return -EPROBE_DEFER;
-		return 0;
-	}
+	d = devm_kzalloc(dev, sizeof(*d), GFP_KERNEL);
+	if (!d)
+		return -ENOMEM;
+	platform_set_drvdata(pdev, d);
 
-	d->freq_in_khz = true;
+	d->clk = devm_clk_get(dev, "devfreq_clk");
+	if (IS_ERR(d->clk))
+		return PTR_ERR(d->clk);
+
+	if (!of_find_property(dev->of_node, PROP_TBL, &len))
+		return -EINVAL;
+
 	len /= sizeof(*data);
 	data = devm_kzalloc(dev, len * sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
+	p = &d->profile;
 	p->freq_table = devm_kzalloc(dev, len * sizeof(*p->freq_table),
 				     GFP_KERNEL);
 	if (!p->freq_table)
@@ -135,32 +142,6 @@ static int parse_freq_table(struct device *dev, struct dev_data *d)
 		return -EINVAL;
 	}
 
-	return 0;
-}
-
-static int devfreq_clock_probe(struct platform_device *pdev)
-{
-	struct device *dev = &pdev->dev;
-	struct dev_data *d;
-	struct devfreq_dev_profile *p;
-	u32 poll;
-	const char *gov_name;
-	int ret;
-
-	d = devm_kzalloc(dev, sizeof(*d), GFP_KERNEL);
-	if (!d)
-		return -ENOMEM;
-	platform_set_drvdata(pdev, d);
-
-	d->clk = devm_clk_get(dev, "devfreq_clk");
-	if (IS_ERR(d->clk))
-		return PTR_ERR(d->clk);
-
-	ret = parse_freq_table(dev, d);
-	if (ret)
-		return ret;
-
-	p = &d->profile;
 	p->target = dev_target;
 	p->get_cur_freq = dev_get_cur_freq;
 	ret = dev_get_cur_freq(dev, &p->initial_freq);
@@ -196,13 +177,11 @@ add_err:
 static int devfreq_clock_remove(struct platform_device *pdev)
 {
 	struct dev_data *d = platform_get_drvdata(pdev);
-
 	devfreq_remove_device(d->df);
-
 	return 0;
 }
 
-static const struct of_device_id devfreq_simple_match_table[] = {
+static struct of_device_id match_table[] = {
 	{ .compatible = "devfreq-simple-dev" },
 	{}
 };
@@ -212,10 +191,23 @@ static struct platform_driver devfreq_clock_driver = {
 	.remove = devfreq_clock_remove,
 	.driver = {
 		.name = "devfreq-simple-dev",
-		.of_match_table = devfreq_simple_match_table,
-		.suppress_bind_attrs = true,
+		.of_match_table = match_table,
+		.owner = THIS_MODULE,
 	},
 };
-module_platform_driver(devfreq_clock_driver);
+
+static int __init devfreq_clock_init(void)
+{
+	platform_driver_register(&devfreq_clock_driver);
+	return 0;
+}
+device_initcall(devfreq_clock_init);
+
+static void __exit devfreq_clock_exit(void)
+{
+	platform_driver_unregister(&devfreq_clock_driver);
+}
+module_exit(devfreq_clock_exit);
+
 MODULE_DESCRIPTION("Devfreq driver for setting generic device clock frequency");
 MODULE_LICENSE("GPL v2");

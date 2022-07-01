@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2009, 2011-2016 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2009, 2011-2015 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -64,10 +64,6 @@ static void __raw_remote_ex_spin_lock(raw_remote_spinlock_t *lock)
 	: "r" (&lock->lock), "r" (SPINLOCK_TOKEN_APPS)
 	: "cc");
 
-	/*
-	 * Ensure the ordering of read/write operations to ensure the
-	 * proper ownership of the lock during the lock/unlock operations
-	 */
 	smp_mb();
 }
 
@@ -84,11 +80,6 @@ static int __raw_remote_ex_spin_trylock(raw_remote_spinlock_t *lock)
 	: "cc");
 
 	if (tmp == 0) {
-		/*
-		 * Ensure the ordering of read/write operations to ensure the
-		 * proper ownership of the lock during the lock/unlock
-		 * operations
-		 */
 		smp_mb();
 		return 1;
 	}
@@ -99,10 +90,6 @@ static void __raw_remote_ex_spin_unlock(raw_remote_spinlock_t *lock)
 {
 	int lock_owner;
 
-	/*
-	 * Ensure the ordering of read/write operations to ensure the
-	 * proper ownership of the lock during the lock/unlock operations
-	 */
 	smp_mb();
 	lock_owner = readl_relaxed(&lock->lock);
 	if (lock_owner != SPINLOCK_TOKEN_APPS) {
@@ -175,7 +162,7 @@ static void find_and_init_hw_mutex(void)
 	init_hw_mutex(node);
 	hw_mutex_reg_base = ioremap(reg_base, reg_size);
 	BUG_ON(hw_mutex_reg_base == NULL);
-	hw_spinlocks = kcalloc(lock_count, sizeof(int), GFP_KERNEL);
+	hw_spinlocks = kzalloc(sizeof(int) * lock_count, GFP_KERNEL);
 	BUG_ON(hw_spinlocks == NULL);
 }
 
@@ -232,11 +219,6 @@ static void __raw_remote_sfpb_spin_lock(raw_remote_spinlock_t *lock)
 	/* acquire remote spinlock */
 	do {
 		writel_relaxed(SPINLOCK_TOKEN_APPS, lock);
-		/*
-		 * Ensure the ordering of read/write operations to ensure the
-		 * proper ownership of the lock during the lock/unlock
-		 * operations
-		 */
 		smp_mb();
 		owner = readl_relaxed(lock);
 		hw_spinlocks[id] = owner;
@@ -248,7 +230,7 @@ static int __raw_remote_sfpb_spin_trylock(raw_remote_spinlock_t *lock)
 	int owner;
 	unsigned int id = remote_spinlock_get_lock_id(lock);
 	/*
-	 * If the local processor owns the spinlock, return failure. This can
+	 * If the local processor owns the spinlock, return failure.  This can
 	 * only happen in test cases since the local spinlock will prevent this
 	 * when using the public APIs.
 	 */
@@ -256,10 +238,6 @@ static int __raw_remote_sfpb_spin_trylock(raw_remote_spinlock_t *lock)
 		return 0;
 
 	writel_relaxed(SPINLOCK_TOKEN_APPS, lock);
-	/*
-	 * Ensure the ordering of read/write operations to ensure the
-	 * proper ownership of the lock during the lock/unlock operations
-	 */
 	smp_mb();
 	owner = readl_relaxed(lock);
 	hw_spinlocks[id] = owner;
@@ -277,10 +255,6 @@ static void __raw_remote_sfpb_spin_unlock(raw_remote_spinlock_t *lock)
 	}
 
 	writel_relaxed(0, lock);
-	/*
-	 * Ensure the ordering of read/write operations to ensure the
-	 * proper ownership of the lock during the lock/unlock operations
-	 */
 	smp_mb();
 }
 
@@ -294,11 +268,6 @@ static void __raw_remote_sfpb_spin_lock_rlock_id(raw_remote_spinlock_t *lock,
 
 	do {
 		writel_relaxed(tid, lock);
-		/*
-		 * Ensure the ordering of read/write operations to ensure the
-		 * proper ownership of the lock during the lock/unlock
-		 * operations
-		 */
 		smp_mb();
 	} while (readl_relaxed(lock) != tid);
 }
@@ -306,10 +275,6 @@ static void __raw_remote_sfpb_spin_lock_rlock_id(raw_remote_spinlock_t *lock,
 static void __raw_remote_sfpb_spin_unlock_rlock(raw_remote_spinlock_t *lock)
 {
 	writel_relaxed(0, lock);
-	/*
-	 * Ensure the ordering of read/write operations to ensure the
-	 * proper ownership of the lock during the lock/unlock operations
-	 */
 	smp_mb();
 }
 
@@ -342,11 +307,6 @@ static int __raw_remote_gen_spin_release(raw_remote_spinlock_t *lock,
 	 */
 	if (readl_relaxed(&lock->lock) == (pid + 1)) {
 		writel_relaxed(0, &lock->lock);
-		/*
-		 * Ensure the ordering of read/write operations to ensure the
-		 * proper ownership of the lock during the lock/unlock
-		 * operations
-		 */
 		wmb();
 		ret = 0;
 	}
@@ -364,11 +324,6 @@ static int __raw_remote_gen_spin_release(raw_remote_spinlock_t *lock,
 static int __raw_remote_gen_spin_owner(raw_remote_spinlock_t *lock)
 {
 	int owner;
-
-	/*
-	 * Ensure the ordering of read/write operations to ensure the
-	 * proper ownership of the lock during the lock/unlock operations
-	 */
 	rmb();
 
 	owner = readl_relaxed(&lock->lock);

@@ -1339,8 +1339,8 @@ bail:
 }
 
 /**
- * ipa2_mdfy_flt_rule() - Modify the specified filtering rules in SW and
- * optionally commit to IPA HW
+ * ipa2_mdfy_flt_rule() - Modify the specified filtering rules in SW and optionally
+ * commit to IPA HW
  *
  * Returns:	0 on success, negative on failure
  *
@@ -1380,8 +1380,8 @@ bail:
 
 
 /**
- * ipa2_commit_flt() - Commit the current SW filtering table of specified type
- * to IPA HW
+ * ipa2_commit_flt() - Commit the current SW filtering table of specified type to
+ * IPA HW
  * @ip:	[in] the family of routing tables
  *
  * Returns:	0 on success, negative on failure

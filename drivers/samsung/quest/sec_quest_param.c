@@ -181,16 +181,6 @@ void quest_clear_param_quest_data()
 	quest_sync_param_quest_data();
 }
 
-void quest_initialize_curr_step()
-{
-	param_quest_data.curr_step = STEP_NONE;
-	param_quest_data.hlos_remained_count = 0;
-	param_quest_data.quefi_remained_count = 0;
-	param_quest_data.suefi_remained_count = 0;
-	param_quest_data.ddrscan_remained_count = 0;	
-	quest_sync_param_quest_data();
-}
-
 void quest_load_param_quest_ddr_result_data()
 {
 	if (!sec_get_param(param_index_quest_ddr_result, &param_quest_ddr_result_data))

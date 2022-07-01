@@ -234,7 +234,7 @@ static void store_acc_gyro_boot_sample(struct st_asm330lhh_sensor *sensor,
 			sensor->bufsample_cnt++;
 		}
 	} else {
-		dev_info(sensor->hw->dev, "End of sensor %d buffering %d\n",
+		dev_info(sensor->hw->dev, "End of sensor %duffering %d\n",
 				sensor->id, sensor->bufsample_cnt);
 		sensor->buffer_asm_samples = false;
 	}
@@ -587,15 +587,43 @@ int st_asm330lhh_fifo_setup(struct st_asm330lhh_hw *hw)
 		if (!hw->iio_devs[i])
 			continue;
 
-		buffer = devm_iio_kfifo_allocate(hw->dev);
+		buffer = iio_kfifo_allocate(hw->iio_devs[i]);
 		if (!buffer)
 			return -ENOMEM;
 
 		iio_device_attach_buffer(hw->iio_devs[i], buffer);
-		hw->iio_devs[i]->modes |= INDIO_BUFFER_SOFTWARE;
+		hw->iio_devs[i]->modes |= INDIO_BUFFER_HARDWARE;
 		hw->iio_devs[i]->setup_ops = &st_asm330lhh_buffer_ops;
+		err = iio_buffer_register(hw->iio_devs[i],
+					  hw->iio_devs[i]->channels,
+					  hw->iio_devs[i]->num_channels);
+		if (err)
+			goto fifo_allocate_error;
 	}
 
 	return st_asm330lhh_fifo_init(hw);
+
+fifo_allocate_error:
+	for (i--; i >= ST_ASM330LHH_ID_GYRO; i--)
+		iio_buffer_unregister(hw->iio_devs[i]);
+
+	for (i = 0; i < ST_ASM330LHH_ID_MAX; i++) {
+		if (!hw->iio_devs[i]->buffer)
+			continue;
+		iio_kfifo_free(hw->iio_devs[i]->buffer);
+	}
+
+	return err;
 }
 
+int st_asm330lhh_deallocate_fifo(struct st_asm330lhh_hw *hw)
+{
+	int i;
+
+	for (i = 0; i < ST_ASM330LHH_ID_MAX; i++) {
+		iio_buffer_unregister(hw->iio_devs[i]);
+		iio_kfifo_free(hw->iio_devs[i]->buffer);
+	}
+
+	return 0;
+}

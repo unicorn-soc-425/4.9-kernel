@@ -57,7 +57,7 @@ void sec_debug_save_last_pet(unsigned long long last_pet)
 		secdbg_log->last_pet = last_pet;
 }
 
-void notrace sec_debug_save_last_ns(unsigned long long last_ns)
+void sec_debug_save_last_ns(unsigned long long last_ns)
 {
 	if (likely(secdbg_log))
 		atomic64_set(&(secdbg_log->last_ns), last_ns);

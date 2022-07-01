@@ -26,9 +26,7 @@
 #include <linux/sched.h>
 #include <linux/dma-mapping.h>
 #include <linux/uaccess.h>
-#include <linux/slab.h>
 #include <linux/goldfish.h>
-#include <linux/acpi.h>
 
 MODULE_AUTHOR("Google, Inc.");
 MODULE_DESCRIPTION("Android QEMU Audio Driver");
@@ -42,12 +40,12 @@ struct goldfish_audio {
 	spinlock_t lock;
 	wait_queue_head_t wait;
 
-	char *buffer_virt;		/* combined buffer virtual address */
+	char __iomem *buffer_virt;      /* combined buffer virtual address */
 	unsigned long buffer_phys;      /* combined buffer physical address */
 
-	char *write_buffer1;		/* write buffer 1 virtual address */
-	char *write_buffer2;		/* write buffer 2 virtual address */
-	char *read_buffer;		/* read buffer virtual address */
+	char __iomem *write_buffer1;    /* write buffer 1 virtual address */
+	char __iomem *write_buffer2;    /* write buffer 2 virtual address */
+	char __iomem *read_buffer;      /* read buffer virtual address */
 	int buffer_status;
 	int read_supported;         /* true if we have audio input support */
 };
@@ -65,7 +63,7 @@ struct goldfish_audio {
 #define AUDIO_READ(data, addr)		(readl(data->reg_base + addr))
 #define AUDIO_WRITE(data, addr, x)	(writel(x, data->reg_base + addr))
 #define AUDIO_WRITE64(data, addr, addr2, x)	\
-	(gf_write_dma_addr((x), data->reg_base + addr, data->reg_base + addr2))
+	(gf_write64((u64)(x), data->reg_base + addr, data->reg_base+addr2))
 
 /*
  *  temporary variable used between goldfish_audio_probe() and
@@ -117,7 +115,6 @@ static ssize_t goldfish_audio_read(struct file *fp, char __user *buf,
 				   size_t count, loff_t *pos)
 {
 	struct goldfish_audio *data = fp->private_data;
-	unsigned long irq_flags;
 	int length;
 	int result = 0;
 
@@ -128,12 +125,8 @@ static ssize_t goldfish_audio_read(struct file *fp, char __user *buf,
 		length = (count > READ_BUFFER_SIZE ? READ_BUFFER_SIZE : count);
 		AUDIO_WRITE(data, AUDIO_START_READ, length);
 
-		wait_event_interruptible(data->wait, data->buffer_status &
-					 AUDIO_INT_READ_BUFFER_FULL);
-
-		spin_lock_irqsave(&data->lock, irq_flags);
-		data->buffer_status &= ~AUDIO_INT_READ_BUFFER_FULL;
-		spin_unlock_irqrestore(&data->lock, irq_flags);
+		wait_event_interruptible(data->wait, (data->buffer_status &
+					 AUDIO_INT_READ_BUFFER_FULL));
 
 		length = AUDIO_READ(data, AUDIO_READ_BUFFER_AVAILABLE);
 
@@ -154,16 +147,16 @@ static ssize_t goldfish_audio_write(struct file *fp, const char __user *buf,
 	struct goldfish_audio *data = fp->private_data;
 	unsigned long irq_flags;
 	ssize_t result = 0;
-	char *kbuf;
+	char __iomem *kbuf;
 
 	while (count > 0) {
 		ssize_t copy = count;
 
 		if (copy > WRITE_BUFFER_SIZE)
 			copy = WRITE_BUFFER_SIZE;
-		wait_event_interruptible(data->wait, data->buffer_status &
+		wait_event_interruptible(data->wait, (data->buffer_status &
 					(AUDIO_INT_WRITE_BUFFER_1_EMPTY |
-					AUDIO_INT_WRITE_BUFFER_2_EMPTY));
+					AUDIO_INT_WRITE_BUFFER_2_EMPTY)));
 
 		if ((data->buffer_status & AUDIO_INT_WRITE_BUFFER_1_EMPTY) != 0)
 			kbuf = data->write_buffer1;
@@ -280,19 +273,19 @@ static int goldfish_audio_probe(struct platform_device *pdev)
 	dma_addr_t buf_addr;
 
 	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
-	if (!data)
+	if (data == NULL)
 		return -ENOMEM;
 	spin_lock_init(&data->lock);
 	init_waitqueue_head(&data->wait);
 	platform_set_drvdata(pdev, data);
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!r) {
+	if (r == NULL) {
 		dev_err(&pdev->dev, "platform_get_resource failed\n");
 		return -ENODEV;
 	}
 	data->reg_base = devm_ioremap(&pdev->dev, r->start, PAGE_SIZE);
-	if (!data->reg_base)
+	if (data->reg_base == NULL)
 		return -ENOMEM;
 
 	data->irq = platform_get_irq(pdev, 0);
@@ -302,7 +295,7 @@ static int goldfish_audio_probe(struct platform_device *pdev)
 	}
 	data->buffer_virt = dmam_alloc_coherent(&pdev->dev,
 				COMBINED_BUFFER_SIZE, &buf_addr, GFP_KERNEL);
-	if (!data->buffer_virt) {
+	if (data->buffer_virt == NULL) {
 		dev_err(&pdev->dev, "allocate buffer failed\n");
 		return -ENOMEM;
 	}
@@ -351,25 +344,11 @@ static int goldfish_audio_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id goldfish_audio_of_match[] = {
-	{ .compatible = "google,goldfish-audio", },
-	{},
-};
-MODULE_DEVICE_TABLE(of, goldfish_audio_of_match);
-
-static const struct acpi_device_id goldfish_audio_acpi_match[] = {
-	{ "GFSH0005", 0 },
-	{ },
-};
-MODULE_DEVICE_TABLE(acpi, goldfish_audio_acpi_match);
-
 static struct platform_driver goldfish_audio_driver = {
 	.probe		= goldfish_audio_probe,
 	.remove		= goldfish_audio_remove,
 	.driver = {
-		.name = "goldfish_audio",
-		.of_match_table = goldfish_audio_of_match,
-		.acpi_match_table = ACPI_PTR(goldfish_audio_acpi_match),
+		.name = "goldfish_audio"
 	}
 };
 

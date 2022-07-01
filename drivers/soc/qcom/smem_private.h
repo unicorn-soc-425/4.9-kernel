@@ -1,4 +1,4 @@
-/* Copyright (c) 2013,2017 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,33 +18,32 @@
 
 
 #define SMD_HEAP_SIZE 512
-extern uint32_t smem_max_items;
 
 struct smem_heap_info {
-	unsigned int initialized;
-	unsigned int free_offset;
-	unsigned int heap_remaining;
-	unsigned int reserved;
+	unsigned initialized;
+	unsigned free_offset;
+	unsigned heap_remaining;
+	unsigned reserved;
 };
 
 struct smem_heap_entry {
-	unsigned int allocated;
-	unsigned int offset;
-	unsigned int size;
-	unsigned int reserved; /* [1:0] reserved, [31:2] aux smem base addr */
+	unsigned allocated;
+	unsigned offset;
+	unsigned size;
+	unsigned reserved; /* bits 1:0 reserved, bits 31:2 aux smem base addr */
 };
 #define BASE_ADDR_MASK 0xfffffffc
 
 struct smem_proc_comm {
-	unsigned int command;
-	unsigned int status;
-	unsigned int data1;
-	unsigned int data2;
+	unsigned command;
+	unsigned status;
+	unsigned data1;
+	unsigned data2;
 };
 
 struct smem_shared {
 	struct smem_proc_comm proc_comm[4];
-	unsigned int version[32];
+	unsigned version[32];
 	struct smem_heap_info heap_info;
 	struct smem_heap_entry heap_toc[SMD_HEAP_SIZE];
 };
@@ -93,7 +92,7 @@ int smem_module_init_notifier_unregister(struct notifier_block *nb);
  * a channel may have been created.  SMD can't do this directly, because the
  * necessary partition internals are restricted to just SMEM.
  */
-unsigned int smem_get_free_space(unsigned int to_proc);
+unsigned smem_get_free_space(unsigned to_proc);
 
 /**
  * smem_get_version() - Get the smem user version number
@@ -101,5 +100,5 @@ unsigned int smem_get_free_space(unsigned int to_proc);
  * @idx: SMEM user idx in SMEM_VERSION_INFO table.
  * @returns: smem version number if success otherwise zero.
  */
-unsigned int smem_get_version(unsigned int idx);
+unsigned smem_get_version(unsigned idx);
 #endif /* _ARCH_ARM_MACH_MSM_SMEM_PRIVATE_H_ */

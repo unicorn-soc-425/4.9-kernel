@@ -37,11 +37,9 @@
 #include <media/v4l2-ioctl.h>
 #include <media/radio-iris.h>
 #include <asm/unaligned.h>
-//[++QC] it is added by SS. please check internally it is still required in the current project
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/gpio.h>
-//[--QC] it is added by SS. please check internally it is still required in the current project
 
 static unsigned int rds_buf = 100;
 static int oda_agt;
@@ -132,9 +130,7 @@ struct iris_device {
 	struct hci_fm_spur_data spur_data;
 	unsigned char is_station_valid;
 	struct hci_fm_blend_table blend_tbl;
-//[++QC] it is added by SS. please check internally it is still required in the current project
 	int lna_gpio;
-//[--QC] it is added by SS. please check internally it is still required in the current project
 	char is_rds_grp_3A_enabled;
 	char is_ert_enabled;
 	char is_rt_plus_enabled;
@@ -5424,7 +5420,6 @@ static int iris_vidioc_s_frequency(struct file *file, void *priv,
 	return retval;
 }
 
-//[++QC] it is added by SS. please check internally it is still required in the current project
 static int iris_fops_open(struct file *file)
 {
 	struct iris_device *radio = video_get_drvdata(video_devdata(file));
@@ -5436,7 +5431,6 @@ static int iris_fops_open(struct file *file)
 
 	return 0;
 }
-//[--QC] it is added by SS. please check internally it is still required in the current project
 
 static int iris_fops_release(struct file *file)
 {
@@ -5484,10 +5478,9 @@ END:
 	if (retval < 0)
 		FMDERR("Err on disable FM %d\n", retval);
 
-//[++QC] it is added by SS. please check internally it is still required in the current project
+
 	if (gpio_is_valid(radio->lna_gpio))
 		gpio_set_value(radio->lna_gpio, 0);
-//[--QC] it is added by SS. please check internally it is still required in the current project
 
 	FMDBG("ret %d", retval);
 	return retval;
@@ -5697,9 +5690,7 @@ static const struct v4l2_file_operations iris_fops = {
 #ifdef CONFIG_COMPAT
 	.compat_ioctl32 = v4l2_compat_ioctl32,
 #endif
-//[++QC] it is added by SS. please check internally it is still required in the current project
 	.open		= iris_fops_open,
-//[--QC] it is added by SS. please check internally it is still required in the current project
 	.release        = iris_fops_release,
 };
 
@@ -5736,7 +5727,7 @@ static int iris_probe(struct platform_device *pdev)
 
 	radio->dev = &pdev->dev;
 	platform_set_drvdata(pdev, radio);
-//[++QC] it is added by SS. please check internally it is still required in the current project
+
 	if (radio->dev->of_node) {
 		radio->lna_gpio = of_get_named_gpio(radio->dev->of_node,
 					"qcom,radio-lna-en", 0);
@@ -5749,7 +5740,7 @@ static int iris_probe(struct platform_device *pdev)
 
 		gpio_direction_output(radio->lna_gpio, 0);
 	}
-//[--QC] it is added by SS. please check internally it is still required in the current project
+
 	radio->videodev = video_device_alloc();
 	if (!radio->videodev) {
 		FMDERR(": Could not allocate V4L device\n");

@@ -54,8 +54,7 @@ static void sec_kn_event(struct input_handle *handle, unsigned int event_type,
 
 	spin_lock(&sec_kn_event_lock);
 
-	/* BTN : 0x100 ~ 0x151, 0x2c0 ~ 0x2e7 */
-	if (event_type != EV_KEY || (event_code >= 0x100 && event_code <= 0x151) || (event_code >= 0x2c0 && event_code <= 0x2e7))
+	if (event_type != EV_KEY || (event_code != KEY_ENDCALL && event_code != KEY_WINK && event_code > KEY_RECENT))
 		goto out;
 
 	rc = atomic_notifier_call_chain(&sec_kn_notifier_list, 0, &param);
@@ -107,7 +106,6 @@ static const struct input_device_id sec_kn_ids[] = {
 		.flags = INPUT_DEVICE_ID_MATCH_EVBIT,
 		.evbit = { BIT_MASK(EV_KEY) },
 	},
-	{},
 };
 
 static struct input_handler sec_kn_handler = {
@@ -122,8 +120,6 @@ static int __init sec_kn_init(void)
 {
 	int err;
 
-	pr_info("%s \n",__func__);
-
 	err = input_register_handler(&sec_kn_handler);
 
 	return err;
@@ -134,5 +130,5 @@ static void __exit sec_kn_exit(void)
 	input_unregister_handler(&sec_kn_handler);
 }
 
-arch_initcall(sec_kn_init);
+arch_initcall_sync(sec_kn_init);
 module_exit(sec_kn_exit);

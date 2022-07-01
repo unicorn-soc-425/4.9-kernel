@@ -37,7 +37,7 @@ struct hmcdrv_ftp_ops {
 static enum hmcdrv_ftp_cmdid hmcdrv_ftp_cmd_getid(const char *cmd, int len);
 static int hmcdrv_ftp_parse(char *cmd, struct hmcdrv_ftp_cmdspec *ftp);
 
-static const struct hmcdrv_ftp_ops *hmcdrv_ftp_funcs; /* current operations */
+static struct hmcdrv_ftp_ops *hmcdrv_ftp_funcs; /* current operations */
 static DEFINE_MUTEX(hmcdrv_ftp_mutex); /* mutex for hmcdrv_ftp_funcs */
 static unsigned hmcdrv_ftp_refcnt; /* start/shutdown reference counter */
 
@@ -200,9 +200,10 @@ int hmcdrv_ftp_probe(void)
 	rc = hmcdrv_ftp_startup();
 
 	if (rc)
-		goto out;
+		return rc;
 
 	rc = hmcdrv_ftp_do(&ftp);
+	free_page((unsigned long) ftp.buf);
 	hmcdrv_ftp_shutdown();
 
 	switch (rc) {
@@ -215,8 +216,7 @@ int hmcdrv_ftp_probe(void)
 			rc = 0; /* clear length (success) */
 		break;
 	} /* switch */
-out:
-	free_page((unsigned long) ftp.buf);
+
 	return rc;
 }
 EXPORT_SYMBOL(hmcdrv_ftp_probe);
@@ -290,13 +290,13 @@ ssize_t hmcdrv_ftp_cmd(char __kernel *cmd, loff_t offset,
  */
 int hmcdrv_ftp_startup(void)
 {
-	static const struct hmcdrv_ftp_ops hmcdrv_ftp_zvm = {
+	static struct hmcdrv_ftp_ops hmcdrv_ftp_zvm = {
 		.startup = diag_ftp_startup,
 		.shutdown = diag_ftp_shutdown,
 		.transfer = diag_ftp_cmd
 	};
 
-	static const struct hmcdrv_ftp_ops hmcdrv_ftp_lpar = {
+	static struct hmcdrv_ftp_ops hmcdrv_ftp_lpar = {
 		.startup = sclp_ftp_startup,
 		.shutdown = sclp_ftp_shutdown,
 		.transfer = sclp_ftp_cmd

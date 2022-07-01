@@ -162,8 +162,12 @@ static int qla4xxx_eh_device_reset(struct scsi_cmnd *cmd);
 static int qla4xxx_eh_target_reset(struct scsi_cmnd *cmd);
 static int qla4xxx_eh_host_reset(struct scsi_cmnd *cmd);
 static int qla4xxx_slave_alloc(struct scsi_device *device);
+static int qla4xxx_slave_configure(struct scsi_device *device);
+static void qla4xxx_slave_destroy(struct scsi_device *sdev);
 static umode_t qla4_attr_is_visible(int param_type, int param);
 static int qla4xxx_host_reset(struct Scsi_Host *shost, int reset_type);
+static int qla4xxx_change_queue_depth(struct scsi_device *sdev, int qdepth,
+				      int reason);
 
 /*
  * iSCSI Flash DDB sysfs entry points
@@ -200,8 +204,10 @@ static struct scsi_host_template qla4xxx_driver_template = {
 	.eh_host_reset_handler	= qla4xxx_eh_host_reset,
 	.eh_timed_out		= qla4xxx_eh_cmd_timed_out,
 
+	.slave_configure	= qla4xxx_slave_configure,
 	.slave_alloc		= qla4xxx_slave_alloc,
-	.change_queue_depth	= scsi_change_queue_depth,
+	.slave_destroy		= qla4xxx_slave_destroy,
+	.change_queue_depth	= qla4xxx_change_queue_depth,
 
 	.this_id		= -1,
 	.cmd_per_lun		= 3,
@@ -3207,8 +3213,6 @@ static int qla4xxx_conn_bind(struct iscsi_cls_session *cls_session,
 	if (iscsi_conn_bind(cls_session, cls_conn, is_leading))
 		return -EINVAL;
 	ep = iscsi_lookup_endpoint(transport_fd);
-	if (!ep)
-		return -EINVAL;
 	conn = cls_conn->dd_data;
 	qla_conn = conn->dd_data;
 	qla_conn->qla_ep = ep->dd_data;
@@ -5939,7 +5943,7 @@ static int get_fw_boot_info(struct scsi_qla_host *ha, uint16_t ddb_index[])
 		val = rd_nvram_byte(ha, sec_addr);
 		if (val & BIT_7)
 			ddb_index[1] = (val & 0x7f);
-		goto exit_boot_info;
+
 	} else if (is_qla80XX(ha)) {
 		buf = dma_alloc_coherent(&ha->pdev->dev, size,
 					 &buf_dma, GFP_KERNEL);
@@ -7247,8 +7251,6 @@ static int qla4xxx_sysfs_ddb_tgt_create(struct scsi_qla_host *ha,
 
 	rc = qla4xxx_copy_from_fwddb_param(fnode_sess, fnode_conn,
 					   fw_ddb_entry);
-	if (rc)
-		goto free_sess;
 
 	ql4_printk(KERN_INFO, ha, "%s: sysfs entry %s created\n",
 		   __func__, fnode_sess->dev.kobj.name);
@@ -8718,6 +8720,13 @@ static int qla4xxx_probe_adapter(struct pci_dev *pdev,
 	host->can_queue = MAX_SRBS ;
 	host->transportt = qla4xxx_scsi_transport;
 
+	ret = scsi_init_shared_tag_map(host, MAX_SRBS);
+	if (ret) {
+		ql4_printk(KERN_WARNING, ha,
+			   "%s: scsi_init_shared_tag_map failed\n", __func__);
+		goto probe_failed;
+	}
+
 	pci_set_drvdata(pdev, ha);
 
 	ret = scsi_add_host(host, &pdev->dev);
@@ -9069,12 +9078,33 @@ static int qla4xxx_slave_alloc(struct scsi_device *sdev)
 	ddb = sess->dd_data;
 
 	sdev->hostdata = ddb;
+	sdev->tagged_supported = 1;
 
 	if (ql4xmaxqdepth != 0 && ql4xmaxqdepth <= 0xffffU)
 		queue_depth = ql4xmaxqdepth;
 
-	scsi_change_queue_depth(sdev, queue_depth);
+	scsi_activate_tcq(sdev, queue_depth);
 	return 0;
+}
+
+static int qla4xxx_slave_configure(struct scsi_device *sdev)
+{
+	sdev->tagged_supported = 1;
+	return 0;
+}
+
+static void qla4xxx_slave_destroy(struct scsi_device *sdev)
+{
+	scsi_deactivate_tcq(sdev, 1);
+}
+
+static int qla4xxx_change_queue_depth(struct scsi_device *sdev, int qdepth,
+				      int reason)
+{
+	if (!ql4xqfulltracking)
+		return -EOPNOTSUPP;
+
+	return iscsi_change_queue_depth(sdev, qdepth, reason);
 }
 
 /**
@@ -9903,9 +9933,6 @@ static struct pci_driver qla4xxx_pci_driver = {
 static int __init qla4xxx_module_init(void)
 {
 	int ret;
-
-	if (ql4xqfulltracking)
-		qla4xxx_driver_template.track_queue_depth = 1;
 
 	/* Allocate cache for SRBs. */
 	srb_cachep = kmem_cache_create("qla4xxx_srbs", sizeof(struct srb), 0,

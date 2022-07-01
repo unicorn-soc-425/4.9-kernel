@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -36,6 +36,10 @@
 #include <asm/hardware/debugv8.h>
 #endif
 
+#define CORESIGHT_LAR		(0xFB0)
+
+#define CORESIGHT_UNLOCK	(0xC5ACCE55)
+
 #define TIMEOUT_US		(100)
 
 #define BM(lsb, msb)		((BIT(msb) - BIT(lsb)) + BIT(msb))
@@ -43,7 +47,6 @@
 #define BVAL(val, n)		((val & BIT(n)) >> n)
 
 #ifdef CONFIG_ARM64
-#define ARM_DEBUG_ARCH_V8_8	(0x8)
 #define ARM_DEBUG_ARCH_V8	(0x6)
 #endif
 
@@ -54,8 +57,8 @@
 #define TZ_DBG_ETM_FEAT_ID	(0x8)
 #define TZ_DBG_ETM_VER		(0x400000)
 
-static uint32_t msm_jtag_save_cntr[NR_CPUS];
-static uint32_t msm_jtag_restore_cntr[NR_CPUS];
+uint32_t msm_jtag_save_cntr[NR_CPUS];
+uint32_t msm_jtag_restore_cntr[NR_CPUS];
 
 /* access debug registers using system instructions */
 struct dbg_cpu_ctx {
@@ -76,6 +79,8 @@ struct dbg_ctx {
 };
 
 static struct dbg_ctx dbg;
+static struct notifier_block jtag_hotcpu_save_notifier;
+static struct notifier_block jtag_hotcpu_restore_notifier;
 static struct notifier_block jtag_cpu_pm_notifier;
 
 #ifdef CONFIG_ARM64
@@ -378,7 +383,6 @@ static inline void dbg_save_state(int cpu)
 	i = cpu * MAX_DBG_REGS;
 
 	switch (dbg.arch) {
-	case ARM_DEBUG_ARCH_V8_8:
 	case ARM_DEBUG_ARCH_V8:
 		/* Set OS Lock to inform the debugger that the OS is in the
 		 * process of saving debug registers. It prevents accidental
@@ -417,7 +421,6 @@ static inline void dbg_restore_state(int cpu)
 	i = cpu * MAX_DBG_REGS;
 
 	switch (dbg.arch) {
-	case ARM_DEBUG_ARCH_V8_8:
 	case ARM_DEBUG_ARCH_V8:
 		/* Clear the OS double lock */
 		isb();
@@ -763,7 +766,6 @@ static inline void dbg_save_state(int cpu)
 	i = cpu * MAX_DBG_REGS;
 
 	switch (dbg.arch) {
-	case ARM_DEBUG_ARCH_V8_8:
 	case ARM_DEBUG_ARCH_V8:
 		/* Set OS Lock to inform the debugger that the OS is in the
 		 * process of saving debug registers. It prevents accidental
@@ -802,7 +804,6 @@ static inline void dbg_restore_state(int cpu)
 	i = cpu * MAX_DBG_REGS;
 
 	switch (dbg.arch) {
-	case ARM_DEBUG_ARCH_V8_8:
 	case ARM_DEBUG_ARCH_V8:
 		/* Clear the OS double lock */
 		isb();
@@ -916,7 +917,6 @@ EXPORT_SYMBOL(msm_jtag_restore_state);
 static inline bool dbg_arch_supported(uint8_t arch)
 {
 	switch (arch) {
-	case ARM_DEBUG_ARCH_V8_8:
 	case ARM_DEBUG_ARCH_V8:
 		break;
 	default:
@@ -925,17 +925,36 @@ static inline bool dbg_arch_supported(uint8_t arch)
 	return true;
 }
 
-static int jtag_hotcpu_save_callback(unsigned int cpu)
+static int jtag_hotcpu_save_callback(struct notifier_block *nfb,
+				unsigned long action, void *hcpu)
 {
-	msm_jtag_save_state();
-	return 0;
+	switch (action & (~CPU_TASKS_FROZEN)) {
+	case CPU_DYING:
+		msm_jtag_save_state();
+		break;
+	}
+	return NOTIFY_OK;
 }
 
-static int jtag_hotcpu_restore_callback(unsigned int cpu)
+static struct notifier_block jtag_hotcpu_save_notifier = {
+	.notifier_call = jtag_hotcpu_save_callback,
+};
+
+static int jtag_hotcpu_restore_callback(struct notifier_block *nfb,
+					unsigned long action, void *hcpu)
 {
-	msm_jtag_restore_state();
-	return 0;
+	switch (action & (~CPU_TASKS_FROZEN)) {
+	case CPU_STARTING:
+		msm_jtag_restore_state();
+		break;
+	}
+	return NOTIFY_OK;
 }
+
+static struct notifier_block jtag_hotcpu_restore_notifier = {
+	.notifier_call = jtag_hotcpu_restore_callback,
+	.priority = 1,
+};
 
 static int jtag_cpu_pm_callback(struct notifier_block *nfb,
 				unsigned long action, void *hcpu)
@@ -960,6 +979,9 @@ static int __init msm_jtag_dbg_init(void)
 {
 	int ret;
 
+	if (msm_jtag_fuse_apps_access_disabled())
+		return -EPERM;
+
 	/* This will run on core0 so use it to populate parameters */
 	dbg_init_arch_data();
 
@@ -977,20 +999,17 @@ static int __init msm_jtag_dbg_init(void)
 
 	/* Allocate dbg state save space */
 #ifdef CONFIG_ARM64
-	dbg.state = kcalloc(MAX_DBG_STATE_SIZE, sizeof(uint64_t), GFP_KERNEL);
+	dbg.state = kzalloc(MAX_DBG_STATE_SIZE * sizeof(uint64_t), GFP_KERNEL);
 #else
-	dbg.state = kcalloc(MAX_DBG_STATE_SIZE, sizeof(uint32_t), GFP_KERNEL);
+	dbg.state = kzalloc(MAX_DBG_STATE_SIZE * sizeof(uint32_t), GFP_KERNEL);
 #endif
 	if (!dbg.state) {
 		ret = -ENOMEM;
 		goto dbg_err;
 	}
 
-	cpuhp_setup_state_nocalls(CPUHP_AP_ARM_SAVE_RESTORE_CORESIGHT4_STARTING,
-				  "AP_ARM_SAVE_RESTORE_CORESIGHT4_STARTING",
-				  jtag_hotcpu_restore_callback,
-				  jtag_hotcpu_save_callback);
-
+	register_hotcpu_notifier(&jtag_hotcpu_save_notifier);
+	register_hotcpu_notifier(&jtag_hotcpu_restore_notifier);
 	cpu_pm_register_notifier(&jtag_cpu_pm_notifier);
 dbg_out:
 	return 0;

@@ -243,9 +243,3 @@ config SEC_BOOTSTAT
 	help
 	  This feature creates a '/proc/bootstat' node and it provides
 	  timestamp info for debugging booting time.
-
-config SEC_NOEYEINFO
-	bool "No Store DDR Eye Info Feature"
-	default n
-	help
-	  This feature enable for no store ddr eye info to ddr eye node

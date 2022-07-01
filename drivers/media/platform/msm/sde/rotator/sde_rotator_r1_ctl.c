@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -167,7 +167,7 @@ int sde_mdp_mixer_pipe_update(struct sde_mdp_pipe *pipe,
 
 int sde_mdp_display_wait4comp(struct sde_mdp_ctl *ctl)
 {
-	int ret = 0;
+	int ret;
 
 	if (!ctl) {
 		SDEROT_ERR("invalid ctl\n");

@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -14,9 +14,6 @@
 #include "ipahal.h"
 #include "ipahal_i.h"
 #include "ipahal_reg_i.h"
-#include "ipahal_fltrt_i.h"
-#include "ipahal_hw_stats_i.h"
-#include "ipahal_nat_i.h"
 
 struct ipahal_context *ipahal_ctx;
 
@@ -34,8 +31,6 @@ static const char *ipahal_imm_cmd_name_to_str[IPA_IMM_CMD_MAX] = {
 	__stringify(IPA_IMM_CMD_DMA_SHARED_MEM),
 	__stringify(IPA_IMM_CMD_IP_PACKET_TAG_STATUS),
 	__stringify(IPA_IMM_CMD_DMA_TASK_32B_ADDR),
-	__stringify(IPA_IMM_CMD_TABLE_DMA),
-	__stringify(IPA_IMM_CMD_IP_V6_CT_INIT)
 };
 
 static const char *ipahal_pkt_status_exception_to_str
@@ -48,10 +43,10 @@ static const char *ipahal_pkt_status_exception_to_str
 	__stringify(IPAHAL_PKT_STATUS_EXCEPTION_FRAG_RULE_MISS),
 	__stringify(IPAHAL_PKT_STATUS_EXCEPTION_SW_FILT),
 	__stringify(IPAHAL_PKT_STATUS_EXCEPTION_NAT),
-	__stringify(IPAHAL_PKT_STATUS_EXCEPTION_IPV6CT),
 };
 
-static u16 ipahal_imm_cmd_get_opcode(enum ipahal_imm_cmd_name cmd);
+#define IPAHAL_MEM_ALLOC(__size, __is_atomic_ctx) \
+		(kzalloc((__size), ((__is_atomic_ctx)?GFP_ATOMIC:GFP_KERNEL)))
 
 
 static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_dma_task_32b_addr(
@@ -67,8 +62,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_dma_task_32b_addr(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	/* Currently supports only one packet */
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd) + (1 << 8);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_dma_task_32b_addr *)pyld->data;
 
@@ -107,7 +100,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_packet_tag_status(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_ip_packet_tag_status *)pyld->data;
 
@@ -134,7 +126,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_dma_shared_mem(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_dma_shared_mem *)pyld->data;
 
@@ -172,61 +163,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_dma_shared_mem(
 	return pyld;
 }
 
-static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_dma_shared_mem_v_4_0(
-	enum ipahal_imm_cmd_name cmd, const void *params, bool is_atomic_ctx)
-{
-	struct ipahal_imm_cmd_pyld *pyld;
-	struct ipa_imm_cmd_hw_dma_shared_mem_v_4_0 *data;
-	struct ipahal_imm_cmd_dma_shared_mem *mem_params =
-		(struct ipahal_imm_cmd_dma_shared_mem *)params;
-
-	if (unlikely(mem_params->size & ~0xFFFF)) {
-		IPAHAL_ERR("Size is bigger than 16bit width 0x%x\n",
-			mem_params->size);
-		WARN_ON(1);
-		return NULL;
-	}
-	if (unlikely(mem_params->local_addr & ~0xFFFF)) {
-		IPAHAL_ERR("Local addr is bigger than 16bit width 0x%x\n",
-			mem_params->local_addr);
-		WARN_ON(1);
-		return NULL;
-	}
-
-	pyld = IPAHAL_MEM_ALLOC(sizeof(*pyld) + sizeof(*data), is_atomic_ctx);
-	if (unlikely(!pyld)) {
-		WARN_ON(1);
-		return pyld;
-	}
-
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
-	pyld->len = sizeof(*data);
-	data = (struct ipa_imm_cmd_hw_dma_shared_mem_v_4_0 *)pyld->data;
-
-	data->direction = mem_params->is_read ? 1 : 0;
-	data->clear_after_read = mem_params->clear_after_read;
-	data->size = mem_params->size;
-	data->local_addr = mem_params->local_addr;
-	data->system_addr = mem_params->system_addr;
-	pyld->opcode |= (mem_params->skip_pipeline_clear ? 1 : 0) << 8;
-	switch (mem_params->pipeline_clear_options) {
-	case IPAHAL_HPS_CLEAR:
-		break;
-	case IPAHAL_SRC_GRP_CLEAR:
-		pyld->opcode |= (1 << 9);
-		break;
-	case IPAHAL_FULL_PIPELINE_CLEAR:
-		pyld->opcode |= (2 << 9);
-		break;
-	default:
-		IPAHAL_ERR("unsupported pipline clear option %d\n",
-			mem_params->pipeline_clear_options);
-		WARN_ON(1);
-	};
-
-	return pyld;
-}
-
 static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_register_write(
 	enum ipahal_imm_cmd_name cmd, const void *params, bool is_atomic_ctx)
 {
@@ -240,7 +176,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_register_write(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_register_write *)pyld->data;
 
@@ -273,54 +208,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_register_write(
 	return pyld;
 }
 
-static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_register_write_v_4_0(
-	enum ipahal_imm_cmd_name cmd, const void *params, bool is_atomic_ctx)
-{
-	struct ipahal_imm_cmd_pyld *pyld;
-	struct ipa_imm_cmd_hw_register_write_v_4_0 *data;
-	struct ipahal_imm_cmd_register_write *regwrt_params =
-		(struct ipahal_imm_cmd_register_write *)params;
-
-	if (unlikely(regwrt_params->offset & ~0xFFFF)) {
-		IPAHAL_ERR("Offset is bigger than 16bit width 0x%x\n",
-			regwrt_params->offset);
-		WARN_ON(1);
-		return NULL;
-	}
-
-	pyld = IPAHAL_MEM_ALLOC(sizeof(*pyld) + sizeof(*data), is_atomic_ctx);
-	if (unlikely(!pyld)) {
-		WARN_ON(1);
-		return pyld;
-	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
-	pyld->len = sizeof(*data);
-	data = (struct ipa_imm_cmd_hw_register_write_v_4_0 *)pyld->data;
-
-	data->offset = regwrt_params->offset;
-	data->offset_high = regwrt_params->offset >> 16;
-	data->value = regwrt_params->value;
-	data->value_mask = regwrt_params->value_mask;
-
-	pyld->opcode |= (regwrt_params->skip_pipeline_clear ? 1 : 0) << 8;
-	switch (regwrt_params->pipeline_clear_options) {
-	case IPAHAL_HPS_CLEAR:
-		break;
-	case IPAHAL_SRC_GRP_CLEAR:
-		pyld->opcode |= (1 << 9);
-		break;
-	case IPAHAL_FULL_PIPELINE_CLEAR:
-		pyld->opcode |= (2 << 9);
-		break;
-	default:
-		IPAHAL_ERR("unsupported pipline clear option %d\n",
-			regwrt_params->pipeline_clear_options);
-		WARN_ON(1);
-	};
-
-	return pyld;
-}
-
 static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_packet_init(
 	enum ipahal_imm_cmd_name cmd, const void *params, bool is_atomic_ctx)
 {
@@ -334,7 +221,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_packet_init(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_ip_packet_init *)pyld->data;
 
@@ -353,42 +239,16 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_nat_dma(
 {
 	struct ipahal_imm_cmd_pyld *pyld;
 	struct ipa_imm_cmd_hw_nat_dma *data;
-	struct ipahal_imm_cmd_table_dma *nat_params =
-		(struct ipahal_imm_cmd_table_dma *)params;
+	struct ipahal_imm_cmd_nat_dma *nat_params =
+		(struct ipahal_imm_cmd_nat_dma *)params;
 
 	pyld = IPAHAL_MEM_ALLOC(sizeof(*pyld) + sizeof(*data), is_atomic_ctx);
 	if (unlikely(!pyld)) {
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_nat_dma *)pyld->data;
-
-	data->table_index = nat_params->table_index;
-	data->base_addr = nat_params->base_addr;
-	data->offset = nat_params->offset;
-	data->data = nat_params->data;
-
-	return pyld;
-}
-
-static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_table_dma_ipav4(
-	enum ipahal_imm_cmd_name cmd, const void *params, bool is_atomic_ctx)
-{
-	struct ipahal_imm_cmd_pyld *pyld;
-	struct ipa_imm_cmd_hw_table_dma_ipav4 *data;
-	struct ipahal_imm_cmd_table_dma *nat_params =
-		(struct ipahal_imm_cmd_table_dma *)params;
-
-	pyld = IPAHAL_MEM_ALLOC(sizeof(*pyld) + sizeof(*data), is_atomic_ctx);
-	if (unlikely(!pyld)) {
-		IPAHAL_ERR("kzalloc err\n");
-		return pyld;
-	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
-	pyld->len = sizeof(*data);
-	data = (struct ipa_imm_cmd_hw_table_dma_ipav4 *)pyld->data;
 
 	data->table_index = nat_params->table_index;
 	data->base_addr = nat_params->base_addr;
@@ -411,7 +271,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_hdr_init_system(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_hdr_init_system *)pyld->data;
 
@@ -433,7 +292,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_hdr_init_local(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_hdr_init_local *)pyld->data;
 
@@ -462,7 +320,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_v6_routing_init(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_ip_v6_routing_init *)pyld->data;
 
@@ -489,7 +346,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_v4_routing_init(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_ip_v4_routing_init *)pyld->data;
 
@@ -516,59 +372,27 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_v4_nat_init(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_ip_v4_nat_init *)pyld->data;
 
-	data->ipv4_rules_addr = nat4_params->table_init.base_table_addr;
+	data->ipv4_rules_addr = nat4_params->ipv4_rules_addr;
 	data->ipv4_expansion_rules_addr =
-		nat4_params->table_init.expansion_table_addr;
+		nat4_params->ipv4_expansion_rules_addr;
 	data->index_table_addr = nat4_params->index_table_addr;
 	data->index_table_expansion_addr =
 		nat4_params->index_table_expansion_addr;
-	data->table_index = nat4_params->table_init.table_index;
+	data->table_index = nat4_params->table_index;
 	data->ipv4_rules_addr_type =
-		nat4_params->table_init.base_table_addr_shared ? 1 : 0;
+		nat4_params->ipv4_rules_addr_shared ? 1 : 0;
 	data->ipv4_expansion_rules_addr_type =
-		nat4_params->table_init.expansion_table_addr_shared ? 1 : 0;
+		nat4_params->ipv4_expansion_rules_addr_shared ? 1 : 0;
 	data->index_table_addr_type =
 		nat4_params->index_table_addr_shared ? 1 : 0;
 	data->index_table_expansion_addr_type =
 		nat4_params->index_table_expansion_addr_shared ? 1 : 0;
-	data->size_base_tables = nat4_params->table_init.size_base_table;
-	data->size_expansion_tables =
-		nat4_params->table_init.size_expansion_table;
-	data->public_addr_info = nat4_params->public_addr_info;
-
-	return pyld;
-}
-
-static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_v6_ct_init(
-	enum ipahal_imm_cmd_name cmd, const void *params, bool is_atomic_ctx)
-{
-	struct ipahal_imm_cmd_pyld *pyld;
-	struct ipa_imm_cmd_hw_ip_v6_ct_init *data;
-	struct ipahal_imm_cmd_ip_v6_ct_init *ipv6ct_params =
-		(struct ipahal_imm_cmd_ip_v6_ct_init *)params;
-
-	pyld = IPAHAL_MEM_ALLOC(sizeof(*pyld) + sizeof(*data), is_atomic_ctx);
-	if (unlikely(!pyld))
-		return pyld;
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
-	pyld->len = sizeof(*data);
-	data = (struct ipa_imm_cmd_hw_ip_v6_ct_init *)pyld->data;
-
-	data->table_addr = ipv6ct_params->table_init.base_table_addr;
-	data->expansion_table_addr =
-		ipv6ct_params->table_init.expansion_table_addr;
-	data->table_index = ipv6ct_params->table_init.table_index;
-	data->table_addr_type =
-		ipv6ct_params->table_init.base_table_addr_shared ? 1 : 0;
-	data->expansion_table_addr_type =
-		ipv6ct_params->table_init.expansion_table_addr_shared ? 1 : 0;
-	data->size_base_table = ipv6ct_params->table_init.size_base_table;
-	data->size_expansion_table =
-		ipv6ct_params->table_init.size_expansion_table;
+	data->size_base_tables = nat4_params->size_base_tables;
+	data->size_expansion_tables = nat4_params->size_expansion_tables;
+	data->public_ip_addr = nat4_params->public_ip_addr;
 
 	return pyld;
 }
@@ -586,7 +410,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_v6_filter_init(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_ip_v6_filter_init *)pyld->data;
 
@@ -613,7 +436,6 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_v4_filter_init(
 		IPAHAL_ERR("kzalloc err\n");
 		return pyld;
 	}
-	pyld->opcode = ipahal_imm_cmd_get_opcode(cmd);
 	pyld->len = sizeof(*data);
 	data = (struct ipa_imm_cmd_hw_ip_v4_filter_init *)pyld->data;
 
@@ -627,25 +449,21 @@ static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_ip_v4_filter_init(
 	return pyld;
 }
 
-static struct ipahal_imm_cmd_pyld *ipa_imm_cmd_construct_dummy(
-	enum ipahal_imm_cmd_name cmd, const void *params, bool is_atomic_ctx)
-{
-	IPAHAL_ERR("no construct function for IMM_CMD=%s, IPA ver %d\n",
-		ipahal_imm_cmd_name_str(cmd), ipahal_ctx->hw_type);
-	WARN_ON(1);
-	return NULL;
-}
-
 /*
  * struct ipahal_imm_cmd_obj - immediate command H/W information for
  *  specific IPA version
  * @construct - CB to construct imm command payload from abstracted structure
  * @opcode - Immediate command OpCode
+ * @dyn_op - Does this command supports Dynamic opcode?
+ *  Some commands opcode are dynamic where the part of the opcode is
+ *  supplied as param. This flag indicates if the specific command supports it
+ *  or not.
  */
 struct ipahal_imm_cmd_obj {
 	struct ipahal_imm_cmd_pyld *(*construct)(enum ipahal_imm_cmd_name cmd,
 		const void *params, bool is_atomic_ctx);
 	u16 opcode;
+	bool dyn_op;
 };
 
 /*
@@ -665,61 +483,43 @@ static struct ipahal_imm_cmd_obj
 	/* IPAv3 */
 	[IPA_HW_v3_0][IPA_IMM_CMD_IP_V4_FILTER_INIT] = {
 		ipa_imm_cmd_construct_ip_v4_filter_init,
-		3},
+		3, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_IP_V6_FILTER_INIT] = {
 		ipa_imm_cmd_construct_ip_v6_filter_init,
-		4},
+		4, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_IP_V4_NAT_INIT] = {
 		ipa_imm_cmd_construct_ip_v4_nat_init,
-		5},
+		5, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_IP_V4_ROUTING_INIT] = {
 		ipa_imm_cmd_construct_ip_v4_routing_init,
-		7},
+		7, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_IP_V6_ROUTING_INIT] = {
 		ipa_imm_cmd_construct_ip_v6_routing_init,
-		8},
+		8, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_HDR_INIT_LOCAL] = {
 		ipa_imm_cmd_construct_hdr_init_local,
-		9},
+		9, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_HDR_INIT_SYSTEM] = {
 		ipa_imm_cmd_construct_hdr_init_system,
-		10},
+		10, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_REGISTER_WRITE] = {
 		ipa_imm_cmd_construct_register_write,
-		12},
+		12, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_NAT_DMA] = {
 		ipa_imm_cmd_construct_nat_dma,
-		14},
+		14, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_IP_PACKET_INIT] = {
 		ipa_imm_cmd_construct_ip_packet_init,
-		16},
+		16, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_DMA_TASK_32B_ADDR] = {
 		ipa_imm_cmd_construct_dma_task_32b_addr,
-		17},
+		17, true},
 	[IPA_HW_v3_0][IPA_IMM_CMD_DMA_SHARED_MEM] = {
 		ipa_imm_cmd_construct_dma_shared_mem,
-		19},
+		19, false},
 	[IPA_HW_v3_0][IPA_IMM_CMD_IP_PACKET_TAG_STATUS] = {
 		ipa_imm_cmd_construct_ip_packet_tag_status,
-		20},
-
-	/* IPAv4 */
-	[IPA_HW_v4_0][IPA_IMM_CMD_REGISTER_WRITE] = {
-		ipa_imm_cmd_construct_register_write_v_4_0,
-		12},
-	/* NAT_DMA was renamed to TABLE_DMA for IPAv4 */
-	[IPA_HW_v4_0][IPA_IMM_CMD_NAT_DMA] = {
-		ipa_imm_cmd_construct_dummy,
-		-1},
-	[IPA_HW_v4_0][IPA_IMM_CMD_TABLE_DMA] = {
-		ipa_imm_cmd_construct_table_dma_ipav4,
-		14},
-	[IPA_HW_v4_0][IPA_IMM_CMD_DMA_SHARED_MEM] = {
-		ipa_imm_cmd_construct_dma_shared_mem_v_4_0,
-		19},
-	[IPA_HW_v4_0][IPA_IMM_CMD_IP_V6_CT_INIT] = {
-		ipa_imm_cmd_construct_ip_v6_ct_init,
-		23}
+		20, false},
 };
 
 /*
@@ -752,18 +552,18 @@ static int ipahal_imm_cmd_init(enum ipa_hw_type ipa_hw_type)
 				 * explicitly overridden immediate command.
 				 * Check validity
 				 */
-				if (!ipahal_imm_cmd_objs[i+1][j].opcode) {
+				 if (!ipahal_imm_cmd_objs[i+1][j].opcode) {
 					IPAHAL_ERR(
 					  "imm_cmd=%s with zero opcode ipa_ver=%d\n",
 					  ipahal_imm_cmd_name_str(j), i+1);
 					WARN_ON(1);
-				}
-				if (!ipahal_imm_cmd_objs[i+1][j].construct) {
+				 }
+				 if (!ipahal_imm_cmd_objs[i+1][j].construct) {
 					IPAHAL_ERR(
 					  "imm_cmd=%s with NULL construct func ipa_ver=%d\n",
 					  ipahal_imm_cmd_name_str(j), i+1);
 					WARN_ON(1);
-				}
+				 }
 			}
 		}
 	}
@@ -788,7 +588,7 @@ const char *ipahal_imm_cmd_name_str(enum ipahal_imm_cmd_name cmd_name)
 /*
  * ipahal_imm_cmd_get_opcode() - Get the fixed opcode of the immediate command
  */
-static u16 ipahal_imm_cmd_get_opcode(enum ipahal_imm_cmd_name cmd)
+u16 ipahal_imm_cmd_get_opcode(enum ipahal_imm_cmd_name cmd)
 {
 	u32 opcode;
 
@@ -809,6 +609,63 @@ static u16 ipahal_imm_cmd_get_opcode(enum ipahal_imm_cmd_name cmd)
 	}
 
 	return opcode;
+}
+
+/*
+ * ipahal_imm_cmd_get_opcode_param() - Get the opcode of an immediate command
+ *  that supports dynamic opcode
+ * Some commands opcode are not totaly fixed, but part of it is
+ *  a supplied parameter. E.g. Low-Byte is fixed and Hi-Byte
+ *  is a given parameter.
+ * This API will return the composed opcode of the command given
+ *  the parameter
+ * Note: Use this API only for immediate comamnds that support Dynamic Opcode
+ */
+u16 ipahal_imm_cmd_get_opcode_param(enum ipahal_imm_cmd_name cmd, int param)
+{
+	u32 opcode;
+
+	if (cmd >= IPA_IMM_CMD_MAX) {
+		IPAHAL_ERR("Invalid immediate command IMM_CMD=%u\n", cmd);
+		ipa_assert();
+		return -EFAULT;
+	}
+
+	IPAHAL_DBG_LOW("Get opcode of IMM_CMD=%s\n",
+		ipahal_imm_cmd_name_str(cmd));
+
+	if (!ipahal_imm_cmd_objs[ipahal_ctx->hw_type][cmd].dyn_op) {
+		IPAHAL_ERR("IMM_CMD=%s does not support dynamic opcode\n",
+			ipahal_imm_cmd_name_str(cmd));
+		ipa_assert();
+		return -EFAULT;
+	}
+
+	/* Currently, dynamic opcode commands uses params to be set
+	 *  on the Opcode hi-byte (lo-byte is fixed).
+	 * If this to be changed in the future, make the opcode calculation
+	 *  a CB per command
+	 */
+	if (param & ~0xFFFF) {
+		IPAHAL_ERR("IMM_CMD=%s opcode param is invalid\n",
+			ipahal_imm_cmd_name_str(cmd));
+		ipa_assert();
+		return -EFAULT;
+	}
+	opcode = ipahal_imm_cmd_objs[ipahal_ctx->hw_type][cmd].opcode;
+	if (opcode == -1) {
+		IPAHAL_ERR("Try to get opcode of obsolete IMM_CMD=%s\n",
+			ipahal_imm_cmd_name_str(cmd));
+		ipa_assert();
+		return -EFAULT;
+	}
+	if (opcode & ~0xFFFF) {
+		IPAHAL_ERR("IMM_CMD=%s opcode will be overridden\n",
+			ipahal_imm_cmd_name_str(cmd));
+		ipa_assert();
+		return -EFAULT;
+	}
+	return (opcode + (param<<8));
 }
 
 /*
@@ -882,12 +739,9 @@ static void ipa_pkt_status_parse(
 {
 	enum ipahal_pkt_status_opcode opcode = 0;
 	enum ipahal_pkt_status_exception exception_type = 0;
-	bool is_ipv6;
 
 	struct ipa_pkt_status_hw *hw_status =
 		(struct ipa_pkt_status_hw *)unparsed_status;
-
-	is_ipv6 = (hw_status->status_mask & 0x80) ? false : true;
 
 	status->pkt_len = hw_status->pkt_len;
 	status->endp_src_idx = hw_status->endp_src_idx;
@@ -980,10 +834,7 @@ static void ipa_pkt_status_parse(
 		exception_type = IPAHAL_PKT_STATUS_EXCEPTION_SW_FILT;
 		break;
 	case 64:
-		if (is_ipv6)
-			exception_type = IPAHAL_PKT_STATUS_EXCEPTION_IPV6CT;
-		else
-			exception_type = IPAHAL_PKT_STATUS_EXCEPTION_NAT;
+		exception_type = IPAHAL_PKT_STATUS_EXCEPTION_NAT;
 		break;
 	default:
 		IPAHAL_ERR("unsupported Status Exception type 0x%x\n",
@@ -1082,18 +933,18 @@ static int ipahal_pkt_status_init(enum ipa_hw_type ipa_hw_type)
 			 * explicitly overridden Packet Status info
 			 * Check validity
 			 */
-			if (!ipahal_pkt_status_objs[i+1].size) {
+			 if (!ipahal_pkt_status_objs[i+1].size) {
 				IPAHAL_ERR(
 				  "Packet Status with zero size ipa_ver=%d\n",
 				  i+1);
 				WARN_ON(1);
-			}
-			if (!ipahal_pkt_status_objs[i+1].parse) {
+			 }
+			  if (!ipahal_pkt_status_objs[i+1].parse) {
 				IPAHAL_ERR(
 				  "Packet Status without Parse func ipa_ver=%d\n",
 				  i+1);
 				WARN_ON(1);
-			}
+			 }
 		}
 	}
 
@@ -1205,7 +1056,7 @@ static void ipahal_cp_hdr_to_hw_buff_v3(void *const base, u32 offset,
  * @offset_entry: offset from hdr_base_addr in table
  * @l2tp_params: l2tp parameters
  */
-static int ipahal_cp_proc_ctx_to_hw_buff_v3(enum ipa_hdr_proc_type type,
+static void ipahal_cp_proc_ctx_to_hw_buff_v3(enum ipa_hdr_proc_type type,
 		void *const base, u32 offset,
 		u32 hdr_len, bool is_hdr_proc_ctx,
 		dma_addr_t phys_base, u32 hdr_base_addr,
@@ -1306,28 +1157,25 @@ static int ipahal_cp_proc_ctx_to_hw_buff_v3(enum ipa_hdr_proc_type type,
 		switch (type) {
 		case IPA_HDR_PROC_ETHII_TO_ETHII:
 			ctx->cmd.value = IPA_HDR_UCP_ETHII_TO_ETHII;
-			break;
+		break;
 		case IPA_HDR_PROC_ETHII_TO_802_3:
 			ctx->cmd.value = IPA_HDR_UCP_ETHII_TO_802_3;
-			break;
+		break;
 		case IPA_HDR_PROC_802_3_TO_ETHII:
 			ctx->cmd.value = IPA_HDR_UCP_802_3_TO_ETHII;
-			break;
+		break;
 		case IPA_HDR_PROC_802_3_TO_802_3:
 			ctx->cmd.value = IPA_HDR_UCP_802_3_TO_802_3;
-			break;
+		break;
 		default:
 			IPAHAL_ERR("unknown ipa_hdr_proc_type %d", type);
-			WARN_ON(1);
-			return -EINVAL;
+			BUG();
 		}
 		IPAHAL_DBG("command id %d\n", ctx->cmd.value);
 		ctx->end.type = IPA_PROC_CTX_TLV_TYPE_END;
 		ctx->end.length = 0;
 		ctx->end.value = 0;
 	}
-
-	return 0;
 }
 
 /*
@@ -1353,7 +1201,7 @@ struct ipahal_hdr_funcs {
 	void (*ipahal_cp_hdr_to_hw_buff)(void *const base, u32 offset,
 			u8 *const hdr, u32 hdr_len);
 
-	int (*ipahal_cp_proc_ctx_to_hw_buff)(enum ipa_hdr_proc_type type,
+	void (*ipahal_cp_proc_ctx_to_hw_buff)(enum ipa_hdr_proc_type type,
 			void *const base, u32 offset, u32 hdr_len,
 			bool is_hdr_proc_ctx, dma_addr_t phys_base,
 			u32 hdr_base_addr,
@@ -1402,10 +1250,7 @@ void ipahal_cp_hdr_to_hw_buff(void *base, u32 offset, u8 *const hdr,
 	IPAHAL_DBG_LOW("Entry\n");
 	IPAHAL_DBG("base %p, offset %d, hdr %p, hdr_len %d\n", base,
 			offset, hdr, hdr_len);
-	if (!base || !hdr_len || !hdr) {
-		IPAHAL_ERR("failed on validating params");
-		return;
-	}
+	BUG_ON(!base || !hdr_len || !hdr);
 
 	hdr_funcs.ipahal_cp_hdr_to_hw_buff(base, offset, hdr, hdr_len);
 
@@ -1425,12 +1270,13 @@ void ipahal_cp_hdr_to_hw_buff(void *base, u32 offset, u8 *const hdr,
  * @offset_entry: offset from hdr_base_addr in table
  * @l2tp_params: l2tp parameters
  */
-int ipahal_cp_proc_ctx_to_hw_buff(enum ipa_hdr_proc_type type,
+void ipahal_cp_proc_ctx_to_hw_buff(enum ipa_hdr_proc_type type,
 		void *const base, u32 offset, u32 hdr_len,
 		bool is_hdr_proc_ctx, dma_addr_t phys_base,
 		u32 hdr_base_addr, struct ipa_hdr_offset_entry *offset_entry,
 		struct ipa_l2tp_hdr_proc_ctx_params l2tp_params)
 {
+	IPAHAL_DBG_LOW("entry\n");
 	IPAHAL_DBG(
 		"type %d, base %p, offset %d, hdr_len %d, is_hdr_proc_ctx %d, hdr_base_addr %d, offset_entry %p\n"
 			, type, base, offset, hdr_len, is_hdr_proc_ctx,
@@ -1445,12 +1291,14 @@ int ipahal_cp_proc_ctx_to_hw_buff(enum ipa_hdr_proc_type type,
 			"invalid input: hdr_len:%u phys_base:%pad hdr_base_addr:%u is_hdr_proc_ctx:%d offset_entry:%pK\n"
 			, hdr_len, &phys_base, hdr_base_addr
 			, is_hdr_proc_ctx, offset_entry);
-		return -EINVAL;
+		BUG();
 	}
 
-	return hdr_funcs.ipahal_cp_proc_ctx_to_hw_buff(type, base, offset,
+	hdr_funcs.ipahal_cp_proc_ctx_to_hw_buff(type, base, offset,
 			hdr_len, is_hdr_proc_ctx, phys_base,
 			hdr_base_addr, offset_entry, l2tp_params);
+
+	IPAHAL_DBG_LOW("Exit\n");
 }
 
 /*
@@ -1489,13 +1337,12 @@ u32 ipahal_get_hps_img_mem_size(void)
 	return IPA_HW_HPS_IMG_MEM_SIZE_V3_0;
 }
 
-int ipahal_init(enum ipa_hw_type ipa_hw_type, void __iomem *base,
-	struct device *ipa_pdev)
+int ipahal_init(enum ipa_hw_type ipa_hw_type, void __iomem *base)
 {
 	int result;
 
-	IPAHAL_DBG("Entry - IPA HW TYPE=%d base=%p ipa_pdev=%p\n",
-		ipa_hw_type, base, ipa_pdev);
+	IPAHAL_DBG("Entry - IPA HW TYPE=%d base=%p\n",
+		ipa_hw_type, base);
 
 	ipahal_ctx = kzalloc(sizeof(*ipahal_ctx), GFP_KERNEL);
 	if (!ipahal_ctx) {
@@ -1522,15 +1369,8 @@ int ipahal_init(enum ipa_hw_type ipa_hw_type, void __iomem *base,
 		goto bail_free_ctx;
 	}
 
-	if (!ipa_pdev) {
-		IPAHAL_ERR("invalid IPA platform device\n");
-		result = -EINVAL;
-		goto bail_free_ctx;
-	}
-
 	ipahal_ctx->hw_type = ipa_hw_type;
 	ipahal_ctx->base = base;
-	ipahal_ctx->ipa_pdev = ipa_pdev;
 
 	if (ipahal_reg_init(ipa_hw_type)) {
 		IPAHAL_ERR("failed to init ipahal reg\n");
@@ -1552,39 +1392,11 @@ int ipahal_init(enum ipa_hw_type ipa_hw_type, void __iomem *base,
 
 	ipahal_hdr_init(ipa_hw_type);
 
-	if (ipahal_fltrt_init(ipa_hw_type)) {
-		IPAHAL_ERR("failed to init ipahal flt rt\n");
-		result = -EFAULT;
-		goto bail_free_ctx;
-	}
-
-	if (ipahal_hw_stats_init(ipa_hw_type)) {
-		IPAHAL_ERR("failed to init ipahal hw stats\n");
-		result = -EFAULT;
-		goto bail_free_fltrt;
-	}
-
-	if (ipahal_nat_init(ipa_hw_type)) {
-		IPAHAL_ERR("failed to init ipahal NAT\n");
-		result = -EFAULT;
-		goto bail_free_fltrt;
-	}
-
-	/* create an IPC buffer for the registers dump */
-	ipahal_ctx->regdumpbuf = ipc_log_context_create(IPAHAL_IPC_LOG_PAGES,
-		"ipa_regs", 0);
-	if (ipahal_ctx->regdumpbuf == NULL)
-		IPAHAL_ERR("failed to create IPA regdump log, continue...\n");
-
 	ipahal_debugfs_init();
 
 	return 0;
 
-bail_free_fltrt:
-	ipahal_fltrt_destroy();
 bail_free_ctx:
-	if (ipahal_ctx->regdumpbuf)
-		ipc_log_context_destroy(ipahal_ctx->regdumpbuf);
 	kfree(ipahal_ctx);
 	ipahal_ctx = NULL;
 bail_err_exit:
@@ -1594,19 +1406,7 @@ bail_err_exit:
 void ipahal_destroy(void)
 {
 	IPAHAL_DBG("Entry\n");
-	ipahal_fltrt_destroy();
 	ipahal_debugfs_remove();
 	kfree(ipahal_ctx);
 	ipahal_ctx = NULL;
-}
-
-void ipahal_free_dma_mem(struct ipa_mem_buffer *mem)
-{
-	if (likely(mem)) {
-		dma_free_coherent(ipahal_ctx->ipa_pdev, mem->size, mem->base,
-			mem->phys_base);
-		mem->size = 0;
-		mem->base = NULL;
-		mem->phys_base = 0;
-	}
 }

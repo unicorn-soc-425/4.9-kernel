@@ -889,16 +889,7 @@ static int sccnxp_probe(struct platform_device *pdev)
 			goto err_out;
 		uartclk = 0;
 	} else {
-		ret = clk_prepare_enable(clk);
-		if (ret)
-			goto err_out;
-
-		ret = devm_add_action_or_reset(&pdev->dev,
-				(void(*)(void *))clk_disable_unprepare,
-				clk);
-		if (ret)
-			goto err_out;
-
+		clk_prepare_enable(clk);
 		uartclk = clk_get_rate(clk);
 	}
 
@@ -997,7 +988,7 @@ static int sccnxp_probe(struct platform_device *pdev)
 	uart_unregister_driver(&s->uart);
 err_out:
 	if (!IS_ERR(s->regulator))
-		regulator_disable(s->regulator);
+		return regulator_disable(s->regulator);
 
 	return ret;
 }
@@ -1026,6 +1017,7 @@ static int sccnxp_remove(struct platform_device *pdev)
 static struct platform_driver sccnxp_uart_driver = {
 	.driver = {
 		.name	= SCCNXP_NAME,
+		.owner	= THIS_MODULE,
 	},
 	.probe		= sccnxp_probe,
 	.remove		= sccnxp_remove,
